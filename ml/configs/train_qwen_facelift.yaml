@@ -1,0 +1,39 @@
+# Workstream 8: facelift (rhytidectomy) LoRA.
+# Same recipe as rhinoplasty but rank bumped to 64 — the hackathon report
+# (§4.2) found the facelift adapter needed more capacity to capture jawline
+# subtleties.
+
+dataset_root: data/pairs/facelift
+resolution: 768
+
+base_model_id: Qwen/Qwen-Image-Edit-2509
+quantize_4bit: true
+
+rank: 64
+alpha: 128
+dropout: 0.1
+target_modules:
+  - to_q
+  - to_k
+  - to_v
+  - to_out.0
+  - ff.net.0.proj
+  - ff.net.2
+
+learning_rate: 1.0e-4
+lr_min: 1.0e-6
+weight_decay: 0.01
+optimizer: adamw_8bit
+
+epochs: 100
+batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+mixed_precision: bf16
+
+output_dir: outputs/facelift
+save_every_epochs: 10
+eval_every_epochs: 5
+eval_holdout_dir: data/pairs/facelift/test
+
+seed: 0

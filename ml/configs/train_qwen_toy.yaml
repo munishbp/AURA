@@ -1,0 +1,41 @@
+# Workstream 4 toy task: train a "add round eyeglasses" LoRA on ~20 hand-curated pairs.
+# Goal: prove the loop works, prove the eval harness picks up the change, prove
+# the 5090 doesn't OOM at 768px batch 1. NOT a meaningful procedure LoRA.
+#
+# Run with:
+#   uv run python -m aura_ml.training.train --config configs/train_qwen_toy.yaml
+
+dataset_root: data/pairs/toy_glasses
+resolution: 768
+
+base_model_id: Qwen/Qwen-Image-Edit-2509
+quantize_4bit: true
+
+rank: 16            # smaller than the procedure recipe — toy task
+alpha: 32
+dropout: 0.1
+target_modules:
+  - to_q
+  - to_k
+  - to_v
+  - to_out.0
+  - ff.net.0.proj
+  - ff.net.2
+
+learning_rate: 1.0e-4
+lr_min: 1.0e-6
+weight_decay: 0.01
+optimizer: adamw_8bit
+
+epochs: 50          # toy task — convergence quick
+batch_size: 1
+gradient_accumulation_steps: 4
+gradient_checkpointing: true
+mixed_precision: bf16
+
+output_dir: outputs/toy_glasses
+save_every_epochs: 5
+eval_every_epochs: 5
+eval_holdout_dir: data/pairs/toy_glasses/test
+
+seed: 0
