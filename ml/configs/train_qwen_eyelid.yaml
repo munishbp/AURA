@@ -1,0 +1,38 @@
+# Workstream 8: blepharoplasty (eyelid) LoRA.
+# Mirrors rhinoplasty rank/alpha — eyelid is small-area, doesn't need extra
+# capacity per the original report.
+
+dataset_root: data/pairs/blepharoplasty
+resolution: 768
+
+base_model_id: Qwen/Qwen-Image-Edit-2509
+quantize_4bit: true
+
+rank: 32
+alpha: 64
+dropout: 0.1
+target_modules:
+  - to_q
+  - to_k
+  - to_v
+  - to_out.0
+  - ff.net.0.proj
+  - ff.net.2
+
+learning_rate: 1.0e-4
+lr_min: 1.0e-6
+weight_decay: 0.01
+optimizer: adamw_8bit
+
+epochs: 100
+batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+mixed_precision: bf16
+
+output_dir: outputs/blepharoplasty
+save_every_epochs: 10
+eval_every_epochs: 5
+eval_holdout_dir: data/pairs/blepharoplasty/test
+
+seed: 0

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
+
+# uv / virtualenv
+.venv/
+.python-version
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# HF model cache (only if user symlinks into the repo; usually lives in HF_HOME)
+hf_cache/
+models/
+
+# Training / eval outputs
+outputs/
+checkpoints/
+runs/
+wandb/
+eval_grids/
+*.safetensors
+*.bin
+*.ckpt
+*.pt
+
+# Datasets — never commit raw imagery
+data/raw/
+data/processed/
+data/pairs/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local secrets
+.env
+.env.*
+!.env.example

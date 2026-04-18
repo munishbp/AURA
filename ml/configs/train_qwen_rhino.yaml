@@ -1,0 +1,44 @@
+# Workstream 6: rhinoplasty procedure LoRA.
+# Hyperparams carry over from the hackathon report (§4.2) with LR lowered for
+# Qwen-Image-Edit (it benefits from lower LRs than FLUX-Kontext recipes).
+#
+# Watch for the "two-bit rule" capacity issue from the report — bump rank if
+# loss plateaus before epoch 50.
+#
+# Run with:
+#   uv run python -m aura_ml.training.train --config configs/train_qwen_rhino.yaml
+
+dataset_root: data/pairs/rhinoplasty
+resolution: 768     # drop to 512 if 5090 VRAM is tight; bump to 1024 on H100
+
+base_model_id: Qwen/Qwen-Image-Edit-2509
+quantize_4bit: true
+
+rank: 32
+alpha: 64
+dropout: 0.1
+target_modules:
+  - to_q
+  - to_k
+  - to_v
+  - to_out.0
+  - ff.net.0.proj
+  - ff.net.2
+
+learning_rate: 1.0e-4
+lr_min: 1.0e-6
+weight_decay: 0.01
+optimizer: adamw_8bit
+
+epochs: 100
+batch_size: 1
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+mixed_precision: bf16
+
+output_dir: outputs/rhinoplasty
+save_every_epochs: 10
+eval_every_epochs: 5
+eval_holdout_dir: data/pairs/rhinoplasty/test
+
+seed: 0
