@@ -205,9 +205,9 @@ Training stays at 512–768px batch 1 + accumulation 4–8.
 | # | Workstream | Status | Est. |
 |---|---|---|---|
 | 0 | Repo init, env, model downloads | **Done** (skeleton + scripts in `aura-ml/`) | ½ wk |
-| 1 | Zero-shot Qwen-Image-Edit-2509 inference baseline | Next | 1 wk |
-| 2 | Eval harness with **static-image canary** | Pending | 1 wk |
-| 3 | Qwen3.5-9B prompt-expander module | Pending | ½ wk |
+| 1 | Zero-shot Qwen-Image-Edit-2509 inference baseline | Logan handle this and get baseline results for nose jobs (Due 5/17/26) | 1 wk |
+| 2 | Eval harness with **static-image canary** | Munish wire together (Due 5/17/26) | 1 wk |
+| 3 | Qwen3.5-9B prompt-expander module | Munish explore training protocol (Due 5/17/26) | ½ wk |
 | 4 | Minimal `train.py` against `diffusers` (toy task: "add glasses") | Pending | 1 wk |
 | 5 | Migrate to `ai-toolkit` | Pending | ½ wk |
 | 6 | Real LoRA training — rhinoplasty first | Pending | 1–2 wk |
