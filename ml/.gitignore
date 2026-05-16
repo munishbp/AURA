@@ -38,6 +38,9 @@ data/raw/
 data/processed/
 data/pairs/
 
+# Eval holdout — HDA database is research-only, non-commercial: do NOT commit
+eval_holdout/
+
 # Notebook checkpoints
 .ipynb_checkpoints/
 
