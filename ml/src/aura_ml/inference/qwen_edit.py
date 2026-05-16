@@ -207,83 +207,40 @@ class QwenImageEditPipeline:
         self,
         image: Image.Image,
         prompt: str,
-        num_steps: int = 30,
-        guidance_scale: float = 4.0,
-        negative_prompt: str | None = None,
+        num_steps: int = 50,      # also bump default from 30 to 50
+        true_cfg_scale: float = 4.0,
         seed: int | None = None,
     ) -> Image.Image:
-        """Run the editing pipeline. Returns a PIL.Image.
-
-        Steps:
-        1. Lazy-load the model if not already loaded.
-        2. Build a seeded `torch.Generator` for reproducibility. When seed is
-           None, generation is non-deterministic (different every call).
-        3. Call the diffusers pipeline. The QwenImageEditPipeline expects:
-           - `image`: the source PIL image
-           - `prompt`: the instruction text
-           - `num_inference_steps`: number of denoising steps
-           - `guidance_scale`: classifier-free guidance scale. 4.0 is a
-             reasonable default for instruction-following edits; lower = more
-             creative / less instruction-bound.
-           - `generator`: the seeded Generator for reproducibility
-        4. Run the static-image canary: compute DINO edit_magnitude between
-           source and output. Warn loudly if < 0.05 — this is the failure mode
-           that killed the hackathon LoRAs. This is a WARNING not an error;
-           the caller (eval harness) decides what to do with it.
-        """
         if self._pipe is None:
             self.load()
 
-        # Build a seeded generator. Keep it on CPU — diffusers will move it
-        # to the right device internally. None seed = random each call.
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cpu").manual_seed(seed)
 
-        # Run inference.
-        # The diffusers QwenImageEditPipeline call signature:
-        #   pipeline(
-        #       image=...,           # PIL.Image source
-        #       prompt=...,          # instruction string
-        #       num_inference_steps=...,
-        #       guidance_scale=...,
-        #       negative_prompt=..., # optional
-        #       generator=...,
-        #   ).images[0]
         result = self._pipe(
             image=image,
             prompt=prompt,
             num_inference_steps=num_steps,
-            guidance_scale=guidance_scale,
-            negative_prompt=negative_prompt,
+            true_cfg_scale=true_cfg_scale,
             generator=generator,
         )
         output: Image.Image = result.images[0]
 
-        # --- Static-image canary -----------------------------------------
-        # Compute edit_magnitude = 1 - cosine(DINO(source), DINO(output)).
-        # We import lazily here to avoid loading DINO until it's actually needed.
-        # The canary fires a warning rather than raising so that:
-        #   (a) the eval harness can aggregate across the holdout and decide
-        #       whether to quarantine the checkpoint
-        #   (b) single inference calls in the demo don't crash on a borderline
-        #       output
+        # static-image canary
         try:
             from aura_ml.eval.metrics import edit_magnitude as _edit_magnitude
             em = _edit_magnitude(image, output)
             if em < _STATIC_THRESHOLD:
+                import warnings
                 warnings.warn(
                     f"[static-image canary] edit_magnitude={em:.4f} < "
-                    f"{_STATIC_THRESHOLD} — output may be a copy of the input. "
-                    "Check your LoRA weights, target_modules, and dataset divergence.",
+                    f"{_STATIC_THRESHOLD} — output may be a copy of the input.",
                     stacklevel=2,
                 )
         except Exception as canary_err:
-            # Don't let a canary failure crash inference — just warn.
-            warnings.warn(
-                f"[static-image canary] could not compute edit_magnitude: {canary_err}",
-                stacklevel=2,
-            )
+            import warnings
+            warnings.warn(f"[static-image canary] could not compute: {canary_err}", stacklevel=2)
 
         return output
 
