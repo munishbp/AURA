@@ -16,6 +16,7 @@ All metric models are loaded lazily and cached as module-level singletons.
 from __future__ import annotations
 
 import math
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -23,7 +24,15 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# AURA_METRICS_DEVICE=cpu keeps the metric models (and onnxruntime's greedy
+# CUDA arena) off the GPU — set by the API server, where VRAM belongs to the
+# editor + expander. Scoring on CPU costs seconds; generation costs a minute.
+# Resolved lazily (not at import) so the env var wins regardless of import
+# order; frozen on first metric call because the models cache per-device.
+def _device() -> str:
+    return os.environ.get("AURA_METRICS_DEVICE") or (
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
 
 def _to_rgb(img: Image.Image) -> Image.Image:
@@ -41,14 +50,14 @@ def _load_dino():
     from transformers import AutoImageProcessor, AutoModel
 
     processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
-    model = AutoModel.from_pretrained("facebook/dinov2-base").eval().to(_DEVICE)
+    model = AutoModel.from_pretrained("facebook/dinov2-base").eval().to(_device())
     return processor, model
 
 
 @torch.inference_mode()
 def _dino_embed(img: Image.Image) -> torch.Tensor:
     processor, model = _load_dino()
-    inputs = processor(images=_to_rgb(img), return_tensors="pt").to(_DEVICE)
+    inputs = processor(images=_to_rgb(img), return_tensors="pt").to(_device())
     out = model(**inputs).last_hidden_state[:, 0]  # CLS token
     return F.normalize(out, dim=-1).squeeze(0)
 
@@ -77,9 +86,14 @@ def _load_arcface():
     """
     import insightface
 
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    if _device() == "cpu":
+        providers = ["CPUExecutionProvider"]
+        ctx_id = -1
+    else:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        ctx_id = 0
     app = insightface.app.FaceAnalysis(name="buffalo_l", providers=providers)
-    app.prepare(ctx_id=0, det_size=(640, 640))
+    app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 
 
@@ -126,13 +140,13 @@ def _load_lpips():
     """LPIPS-AlexNet. Cheap, well-calibrated."""
     import lpips
 
-    return lpips.LPIPS(net="alex").eval().to(_DEVICE)
+    return lpips.LPIPS(net="alex").eval().to(_device())
 
 
 def _lpips_tensor(img: Image.Image) -> torch.Tensor:
     arr = np.array(_to_rgb(img).resize((256, 256), Image.LANCZOS), dtype=np.float32) / 255.0
     t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)  # 1x3xHxW in [0,1]
-    return (t * 2.0 - 1.0).to(_DEVICE)
+    return (t * 2.0 - 1.0).to(_device())
 
 
 @torch.inference_mode()
@@ -156,7 +170,7 @@ def _load_clip():
         "ViT-L-14", pretrained="openai"
     )
     tokenizer = open_clip.get_tokenizer("ViT-L-14")
-    return model.to(_DEVICE).eval(), preprocess, tokenizer
+    return model.to(_device()).eval(), preprocess, tokenizer
 
 
 @torch.inference_mode()
@@ -165,8 +179,8 @@ def clip_score(image: Image.Image, text: str) -> float:
     output matches the instruction.
     """
     model, preprocess, tokenizer = _load_clip()
-    img_t = preprocess(_to_rgb(image)).unsqueeze(0).to(_DEVICE)
-    tok = tokenizer([text]).to(_DEVICE)
+    img_t = preprocess(_to_rgb(image)).unsqueeze(0).to(_device())
+    tok = tokenizer([text]).to(_device())
     img_emb = F.normalize(model.encode_image(img_t), dim=-1)
     txt_emb = F.normalize(model.encode_text(tok), dim=-1)
     return float((img_emb @ txt_emb.T).item())

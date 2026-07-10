@@ -9,17 +9,26 @@ state, and what's next. Updates appended at the bottom.
 
 ---
 
-## Status (April 2026)
+## Status (July 2026 — `fable` branch)
 
-The hackathon code in this repo is **frozen**. The new ML pipeline is being
-rebuilt from scratch in a separate sibling directory `aura-ml/` (not yet
-pushed). The hackathon stack — DreamOmni2 on FLUX.1-Kontext, Qwen2.5-VL prompt
-expander, AMD MI300X / ROCm, iOS LiDAR app, Express backend, React frontend —
-is being dropped end-to-end.
+The hackathon code in this repo is **frozen**. The rebuilt ML pipeline lives
+in **`ml/`** in this repo (the separate `aura-ml/` sibling-repo plan was
+dropped; it's simpler as one repo). The hackathon stack — DreamOmni2 on
+FLUX.1-Kontext, Qwen2.5-VL prompt expander, AMD MI300X / ROCm, iOS LiDAR app,
+Express backend, React frontend — is gone end-to-end.
 
-**Where we are right now**: workstream 0 (env + scaffolding) is done in
-`aura-ml/`. Nothing trained yet. Nothing running yet. Next thing to do is run
-`verify_env.py` on the 5090 box and pull the two base models.
+**Where we are right now**: the pipeline is implemented and running on the
+5090 box. Editor is **Qwen-Image-Edit-2511** (newest open Qwen edit model,
+NF4-quantized, ~17 GB), expander is **Qwen3.5-9B** (4-bit, ~7 GB) with a
+tightened prompt contract (strict output structure, conservative-magnitude
+enforcement, out-of-scope guard, deterministic sanitizer + rule-based
+fallback). The eval harness with the static-image canary is wired end-to-end,
+and `ml/src/aura_ml/training/train.py` is a full QLoRA flow-matching trainer
+that mirrors the diffusers pipeline's conditioning exactly and auto-quarantines
+checkpoints that trip the canary. See `ml/README.md` for the quickstart.
+
+What's still open: procedure LoRAs need real paired data (HDA database or
+curated synthetic pairs) — the training loop is validated on the toy task.
 
 ---
 
@@ -129,15 +138,15 @@ A few things piled up after the hackathon and we never got back to it cleanly:
 
 ## What's changed for the rebuild
 
-| Layer | Hackathon (Oct 2025) | Rebuild (Apr 2026) |
+| Layer | Hackathon (Oct 2025) | Rebuild (Jul 2026) |
 |---|---|---|
-| Diffusion model | DreamOmni2 (FLUX.1-Kontext, non-commercial license, paper-repo code) | **Qwen-Image-Edit-2509** (Apache 2.0; SOTA for instruction edits per Apr 2026 community benchmarks; first-class `ai-toolkit` support) |
-| Prompt expander | Qwen2.5-VL-7B | **Qwen3.5-9B** (released Mar 2026; unified VLM, 262K context, beats Qwen3-VL on visual reasoning) |
-| Training scaffold | Custom PyTorch on ROCm | `ai-toolkit` (ostris) on top of `diffusers` + `peft` |
-| Hardware | AMD MI300X 192 GB / ROCm | RTX 5090 32 GB / CUDA 12.8 (Blackwell sm_120), Vast.ai H100 escape valve |
+| Diffusion model | DreamOmni2 (FLUX.1-Kontext, non-commercial license, paper-repo code) | **Qwen-Image-Edit-2511** (Apache 2.0; Dec 2025, newest open Qwen edit model — less drift, much better identity/character consistency than 2509) |
+| Prompt expander | Qwen2.5-VL-7B | **Qwen3.5-9B** (Mar 2026; unified early-fusion VLM) + tightened contract: fixed region→change→preserve structure, banned-amplifier substitution, OUT_OF_SCOPE guard, template fallback |
+| Training scaffold | Custom PyTorch on ROCm | Self-contained QLoRA trainer on `diffusers` + `peft` (`ml/src/aura_ml/training/train.py`), conditioning cached so the 7B text encoder never competes with training for VRAM |
+| Hardware | AMD MI300X 192 GB / ROCm | RTX 5090 32 GB / CUDA 12.8 (Blackwell sm_120) — everything NF4/4-bit quantized to fit |
 | Capture | iOS app + LiDAR + Express + React + Swift | **Plain photo upload** in a single Gradio file |
-| Identity preservation | Not addressed (system "overshot" — report §7.2) | Identity / likeness LoRA composed with procedure LoRA at inference |
-| Eval | Manual eyeballing | Holdout grid with ArcFace cosine, **edit-magnitude (static-image canary)**, LPIPS, CLIPScore |
+| Identity preservation | Not addressed (system "overshot" — report §7.2) | 2511's native consistency + preserve-clause enforced in every prompt + ArcFace floor in eval; identity LoRA composition supported at inference |
+| Eval | Manual eyeballing | Holdout grid with ArcFace cosine, **edit-magnitude (static-image canary)**, LPIPS, CLIPScore; live metrics in the demo; canary auto-quarantine in training |
 
 ### Why Qwen and not FLUX
 
@@ -149,6 +158,13 @@ Apr 2026), (c) Qwen ships native paired-data training conventions in
 weights are freely distributable if we ever want to share anything. We
 considered FLUX.2 [dev] but it's 32B and really wants 80 GB VRAM — overkill on
 a 5090.
+
+Re-checked July 2026: **2511 over 2509** — same `QwenImageEditPlusPipeline`,
+same Apache 2.0, but materially better character consistency (the metric this
+project is graded on) and less image drift. Qwen-Image-2.0 (Feb 2026) would be
+tempting — 7B, unified gen+edit, native 2K — but it's Qwen-Chat-only with no
+open weights, so it's out. Training and serving both happen on 2511 so the
+adapter/base always match (pre-mortem #4/#5).
 
 ### Why Qwen3.5-9B for the prompt expander
 
@@ -204,16 +220,16 @@ Training stays at 512–768px batch 1 + accumulation 4–8.
 
 | # | Workstream | Status | Est. |
 |---|---|---|---|
-| 0 | Repo init, env, model downloads | **Done** (skeleton + scripts in `aura-ml/`) | ½ wk |
-| 1 | Zero-shot Qwen-Image-Edit-2509 inference baseline | Logan handle this and get baseline results for nose jobs (Due 5/17/26) | 1 wk |
-| 2 | Eval harness with **static-image canary** | Munish wire together (Due 5/17/26) | 1 wk |
-| 3 | Qwen3.5-9B prompt-expander module | Munish explore training protocol (Due 5/17/26) | ½ wk |
-| 4 | Minimal `train.py` against `diffusers` (toy task: "add glasses") | Pending | 1 wk |
-| 5 | Migrate to `ai-toolkit` | Pending | ½ wk |
-| 6 | Real LoRA training — rhinoplasty first | Pending | 1–2 wk |
-| 7 | Identity-preservation LoRA + composition | Pending | ½ wk |
-| 8 | Other two procedures (facelift, eyelid) | Pending | ½ wk |
-| 9 | Gradio demo UI | Pending | ½ wk |
+| 0 | Repo init, env, model downloads | **Done** | ½ wk |
+| 1 | Zero-shot Qwen-Image-Edit-2511 inference baseline | **Done** (`ml/src/aura_ml/inference/qwen_edit.py`, NF4 on the 5090) | 1 wk |
+| 2 | Eval harness with **static-image canary** | **Done** (`ml/src/aura_ml/eval/`, smoke-tested both directions) | 1 wk |
+| 3 | Qwen3.5-9B prompt-expander module | **Done** (`ml/src/aura_ml/prompt_expander/qwen35.py` — tightened contract + guardrails + stdio service) | ½ wk |
+| 4 | `train.py` against `diffusers` (toy task: "add glasses") | **Done** (full QLoRA flow-matching trainer w/ conditioning cache + canary quarantine) | 1 wk |
+| 5 | Migrate to `ai-toolkit` | Dropped — own trainer mirrors the pipeline exactly and stays debuggable; revisit only if we need its recipes | ½ wk |
+| 6 | Real LoRA training — rhinoplasty first | **Blocked on paired data** (loop validated on toy task; synthetic-pair curation implemented in `data/synthetic_pairs.py`) | 1–2 wk |
+| 7 | Identity-preservation LoRA + composition | Composition path done (`set_adapters` w/ sidecar assert); per-subject training pending | ½ wk |
+| 8 | Other two procedures (facelift, eyelid) | Configs ready; blocked on 6 | ½ wk |
+| 9 | Gradio demo UI | **Done** (`ml/app/demo.py` — editable expanded prompt, live metrics + canary badge) | ½ wk |
 
 "Wk" = a weekend's worth of focused work, not calendar weeks. Realistic total:
 3–6 months at our pace.
@@ -263,33 +279,32 @@ Realities to plan around:
 ## Repo state
 
 ```
-AURA/                            ← this repo, FROZEN
-├── app/                         iOS app (Swift, ARKit, LiDAR) — not being touched
-├── backend/                     Express + node-ssh — not being touched
-├── frontend/                    React + Vite — not being touched
+AURA/                            ← this repo
+├── app/                         iOS app (Swift, ARKit, LiDAR) — FROZEN hackathon code
+├── backend/                     Express + node-ssh — FROZEN hackathon code
+├── frontend/                    React + Vite — FROZEN hackathon code
 ├── Aura_Tech_Report.pdf         the 17-page hackathon writeup; useful background
 ├── package.json                 vestigial
-└── README.md                    this file
-
-../aura-ml/                      ← new repo, ACTIVE
-├── pyproject.toml               uv-managed, torch from cu128 index
-├── scripts/
-│   ├── verify_env.py            sanity-check the 5090 box
-│   └── download_models.sh       pulls Qwen-Image-Edit-2509 + Qwen3.5-9B (~58 GB)
-├── src/aura_ml/
-│   ├── inference/               qwen_edit.py (W1), pipeline.py (W7)
-│   ├── prompt_expander/         qwen35.py (W3)
-│   ├── training/                train.py (W4)
-│   ├── data/                    pair_loader.py (W6), synthetic_pairs.py (W6)
-│   └── eval/                    metrics.py + grid.py (W2)
-├── configs/                     ai-toolkit YAML configs (W5+)
-├── app/                         demo.py (W9)
-└── notebooks/                   exploration only
+├── README.md                    this file
+└── ml/                          ← ACTIVE — the rebuilt pipeline (see ml/README.md)
+    ├── pyproject.toml           uv-managed, torch from cu128 index, Python 3.12
+    ├── scripts/                 verify_env, download_models (2511 + Qwen3.5-9B ~62 GB),
+    │                            fetch_test_faces, build_eval_holdout, eval_smoke
+    ├── src/aura_ml/
+    │   ├── inference/           qwen_edit.py (NF4 wrapper + LoRA mgmt), pipeline.py
+    │   ├── prompt_expander/     qwen35.py (tightened expander + stdio service)
+    │   ├── training/            train.py (QLoRA flow-matching + canary quarantine)
+    │   ├── data/                pair_loader.py, synthetic_pairs.py, SCHEMA.md
+    │   └── eval/                metrics.py + grid.py (canary lives here)
+    ├── configs/                 per-procedure training YAMLs
+    ├── data/instructions/       instruction variants for synthetic pairing
+    └── app/                     demo.py (Gradio)
 ```
 
-`aura-ml/` is intentionally a separate repo — no point dragging the iOS / Node
-/ React baggage along. We can re-introduce a web frontend later by adding a
-FastAPI module that imports the same inference code.
+The old plan had this as a separate `aura-ml` repo; keeping it as `ml/` in
+this repo turned out simpler — the frozen hackathon dirs don't get in the way.
+A web frontend can return later as a FastAPI module importing the same
+inference code.
 
 ---
 
@@ -304,6 +319,29 @@ FastAPI module that imports the same inference code.
   package layout. Plan file at `~/.claude/plans/eventual-juggling-stonebraker.md`.
   Next: actually run `verify_env.py` on the 5090, pull the models, write
   workstream 1.
+
+- **2026-07-10 (Munish, `fable` branch)** — Finished the
+  pipeline. Model refresh: editor bumped 2509 → **Qwen-Image-Edit-2511**
+  (better identity consistency; same pipeline class), expander implemented on
+  **Qwen3.5-9B** 4-bit with a tightened contract (fixed region→change→preserve
+  output structure, conservative-quantifier enforcement, OUT_OF_SCOPE guard,
+  sanitizer, rule-based fallback, stdio service mode). Rewrote
+  `inference/qwen_edit.py` for NF4 (bf16 didn't fit 32 GB; the old code would
+  have OOM'd), fixed the `pipeline.py`/config drift crash, implemented
+  `pair_loader`, `synthetic_pairs` (metric + VLM-judge curation), and a full
+  QLoRA flow-matching `train.py` that mirrors `QwenImageEditPlusPipeline`
+  conditioning exactly (packed latents, sequence-concat control, template-64
+  prompt embeds, dynamic-shift sigmas, norm-preserving CFG in eval) with
+  conditioning caching and canary auto-quarantine. Old configs' FLUX-style
+  `target_modules` (`ff.net.*`) would have failed on the Qwen transformer —
+  replaced with the real module names (attn both streams + img/txt MLPs).
+  Rebuilt the Gradio demo on the package with editable expanded prompts and
+  live metrics. Repo hygiene: `ml/` folded into this repo, Windows-mangled
+  UTF-16 `requirements.txt` dropped (uv.lock is the source of truth),
+  redundant `app/qwen_edit.py` shim deleted. Verified on the 5090:
+  zero-shot baseline, expander outputs, eval smoke both directions, toy
+  training run. Remaining: real paired data for procedure LoRAs (HDA
+  application or aggressive synthetic curation), per-subject identity LoRA.
 
 ---
 

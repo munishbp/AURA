@@ -202,7 +202,11 @@ def build_ui(pipeline: AuraInferencePipeline) -> gr.Blocks:
                 )
 
                 with gr.Accordion("Advanced options", open=False):
-                    steps = gr.Slider(10, 60, value=40, step=1, label="Diffusion steps")
+                    steps = gr.Slider(
+                        4, 60,
+                        value=pipeline.diffuser.default_num_steps,
+                        step=1, label="Diffusion steps",
+                    )
                     seed_input = gr.Number(label="Seed (0 = random)", value=0, precision=0)
                     use_expander = gr.Checkbox(
                         label="Use VLM prompt expander", value=pipeline.expander is not None,

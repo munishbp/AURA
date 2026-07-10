@@ -35,10 +35,21 @@ from PIL import Image
 
 DEFAULT_MODEL_ID = "Qwen/Qwen-Image-Edit-2511"
 
-# Inference recipe from the 2511 model card.
+# Inference recipes. The base-model recipe (40 steps, true CFG 4.0) is from
+# the 2511 model card. The Lightning recipe uses lightx2v's step-distillation
+# LoRA — 5x fewer steps means quantization noise compounds 5x less, which on
+# the NF4 base measurably improves identity preservation (ArcFace 0.55 → 0.69
+# on the seed-42 benchmark face) at 10x the speed. Lightning is therefore the
+# serving default; "off" restores the model-card recipe.
 DEFAULT_NUM_STEPS = 40
 DEFAULT_TRUE_CFG = 4.0
 DEFAULT_NEGATIVE = " "
+
+LIGHTNING_REPO = "lightx2v/Qwen-Image-Edit-2511-Lightning"
+LIGHTNING_RECIPES = {
+    "8step": ("Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors", 8),
+    "4step": ("Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", 4),
+}
 
 
 @dataclass
@@ -53,9 +64,16 @@ class QwenEditConfig:
     model_id: str = DEFAULT_MODEL_ID
     device: str = "cuda"
     torch_dtype: torch.dtype = torch.bfloat16
-    # "nf4" quantizes transformer + text encoder with bitsandbytes (fits the
-    # 5090); "none" loads bf16 (needs ~45 GB VRAM — H100 class only).
+    # "nf4"  — bitsandbytes 4-bit transformer + text encoder (~19 GB total):
+    #          leaves room to co-locate the Qwen3.5-9B expander (~7 GB).
+    # "none" — bf16 (needs ~45 GB VRAM — H100 class only).
+    # (torchao fp8 was evaluated and rejected: float8dq OOMs on 32 GB and
+    # can't CPU-offload; float8wo silently degrades to identity output —
+    # edit_magnitude 0.01, caught by the static-image canary.)
     quantize: Literal["nf4", "none"] = "nf4"
+    # Step-distillation LoRA (composes with procedure LoRAs). "8step" is the
+    # default serving recipe; "off" = the 40-step model-card recipe.
+    lightning: Literal["8step", "4step", "off"] = "8step"
     # Model-level CPU offload trades speed for VRAM headroom. Not needed on a
     # 32 GB card with NF4; enable if co-locating with a training job.
     enable_cpu_offload: bool = False
@@ -76,6 +94,7 @@ class QwenImageEditPipeline:
         self._pipe = None
         self._loaded_loras: dict[str, LoadedLora] = {}
         self._active_loras: list[str] = []
+        self._lightning_steps: int | None = None
 
         if self.config.auto_device and not torch.cuda.is_available():
             print("[QwenEdit] CUDA not available — falling back to CPU (will be slow)")
@@ -83,6 +102,13 @@ class QwenImageEditPipeline:
             self.config.torch_dtype = torch.float32  # bf16 unsupported on CPU
             self.config.quantize = "none"  # bitsandbytes needs CUDA
             self.config.enable_cpu_offload = False
+
+    @property
+    def default_num_steps(self) -> int:
+        """Steps the current recipe will use when the caller doesn't specify."""
+        if self.config.lightning != "off":
+            return LIGHTNING_RECIPES[self.config.lightning][1]
+        return DEFAULT_NUM_STEPS
 
     # ------------------------------------------------------------------
     # Model lifecycle
@@ -106,21 +132,35 @@ class QwenImageEditPipeline:
             from diffusers.quantizers import PipelineQuantizationConfig
             from transformers import BitsAndBytesConfig as TransformersBnb
 
+            # Diffusion has no error correction: quantization noise in the
+            # weights compounds across every denoise step and surfaces as
+            # grain. Keeping the first and last blocks + the in/out
+            # projections in bf16 (~1 GB) removes most of it — same recipe
+            # as the community 4-bit builds.
+            keep_bf16 = [
+                "transformer_blocks.0.",
+                "transformer_blocks.59.",
+                "img_in",
+                "txt_in",
+                "proj_out",
+            ]
             load_kwargs["quantization_config"] = PipelineQuantizationConfig(
                 quant_mapping={
                     "transformer": DiffusersBnb(
                         load_in_4bit=True,
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_compute_dtype=self.config.torch_dtype,
+                        bnb_4bit_use_double_quant=True,
+                        llm_int8_skip_modules=keep_bf16,
                     ),
                     "text_encoder": TransformersBnb(
                         load_in_4bit=True,
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_compute_dtype=self.config.torch_dtype,
+                        bnb_4bit_use_double_quant=True,
                     ),
                 }
             )
-
         self._pipe = QwenImageEditPlusPipeline.from_pretrained(
             self.config.model_id, **load_kwargs
         )
@@ -129,6 +169,18 @@ class QwenImageEditPipeline:
             self._pipe.enable_model_cpu_offload()
         elif self.config.device != "cpu":
             self._pipe.to(self.config.device)
+
+        if self.config.lightning != "off" and self.config.device != "cpu":
+            from huggingface_hub import hf_hub_download
+
+            fname, self._lightning_steps = LIGHTNING_RECIPES[self.config.lightning]
+            lora_path = hf_hub_download(LIGHTNING_REPO, fname)
+            self._pipe.load_lora_weights(lora_path, adapter_name="lightning")
+            self._pipe.set_adapters(["lightning"], adapter_weights=[1.0])
+            self._loaded_loras["lightning"] = LoadedLora("lightning", lora_path, 1.0)
+            self._active_loras = ["lightning"]
+            print(f"[QwenEdit] Lightning {self.config.lightning} active "
+                  f"({self._lightning_steps} steps, cfg 1.0)")
 
         if self.config.enable_torch_compile:
             self._pipe.transformer = torch.compile(self._pipe.transformer)
@@ -180,20 +232,32 @@ class QwenImageEditPipeline:
         print(f"[QwenEdit] loaded LoRA '{name}' from {path}")
 
     def set_active_loras(self, names: list[str], weights: list[float]) -> None:
-        """Activate a subset of loaded LoRAs at given weights."""
+        """Activate a subset of loaded LoRAs at given weights. The Lightning
+        adapter (a serving recipe, not a procedure edit) is always composed
+        in when enabled."""
         if self._pipe is None:
             raise RuntimeError("pipeline not loaded — call load() first")
         unknown = [n for n in names if n not in self._loaded_loras]
         if unknown:
             raise KeyError(f"LoRA(s) not loaded: {unknown}")
+        names = list(names)
+        weights = list(weights)
+        if "lightning" in self._loaded_loras and "lightning" not in names:
+            names.insert(0, "lightning")
+            weights.insert(0, 1.0)
         self._pipe.set_adapters(names, adapter_weights=weights)
-        self._active_loras = list(names)
+        self._active_loras = names
 
     def disable_loras(self) -> None:
-        """Run the base model with no adapter contribution."""
-        if self._pipe is not None and self._loaded_loras:
+        """Deactivate procedure/identity adapters (Lightning stays if enabled)."""
+        if self._pipe is None:
+            return
+        if "lightning" in self._loaded_loras:
+            self._pipe.set_adapters(["lightning"], adapter_weights=[1.0])
+            self._active_loras = ["lightning"]
+        elif self._loaded_loras:
             self._pipe.disable_lora()
-        self._active_loras = []
+            self._active_loras = []
 
     # ------------------------------------------------------------------
     # Generation
@@ -203,8 +267,8 @@ class QwenImageEditPipeline:
         self,
         image: Image.Image | list[Image.Image],
         prompt: str,
-        num_steps: int = DEFAULT_NUM_STEPS,
-        true_cfg_scale: float = DEFAULT_TRUE_CFG,
+        num_steps: int | None = None,
+        true_cfg_scale: float | None = None,
         negative_prompt: str = DEFAULT_NEGATIVE,
         seed: int | None = None,
     ) -> Image.Image:
@@ -214,13 +278,22 @@ class QwenImageEditPipeline:
             image:           Input face photo, or a list of reference images
                              (2511 supports multi-image conditioning).
             prompt:          Detailed edit instruction (ideally from the prompt expander).
-            num_steps:       Diffusion steps. 40 per the 2511 model card.
-            true_cfg_scale:  Classifier-free guidance scale. 4.0 per Qwen docs.
+            num_steps:       Diffusion steps. Default: 8 with Lightning,
+                             40 (model-card recipe) without.
+            true_cfg_scale:  CFG scale. Default: 1.0 with Lightning (distilled
+                             models need no CFG), 4.0 without.
             negative_prompt: What to avoid. A single space disables it.
             seed:            For reproducibility. None = random.
         """
         if self._pipe is None:
             self.load()
+
+        if self._lightning_steps is not None:
+            num_steps = num_steps or self._lightning_steps
+            true_cfg_scale = true_cfg_scale if true_cfg_scale is not None else 1.0
+        else:
+            num_steps = num_steps or DEFAULT_NUM_STEPS
+            true_cfg_scale = true_cfg_scale if true_cfg_scale is not None else DEFAULT_TRUE_CFG
 
         generator = None
         if seed is not None:

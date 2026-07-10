@@ -360,10 +360,22 @@ def load_transformer(cfg: TrainConfig, device: str = "cuda"):
     if cfg.quantize_4bit:
         from diffusers import BitsAndBytesConfig
 
+        # Same selective-NF4 recipe as inference (qwen_edit.py): first/last
+        # blocks + in/out projections stay bf16 so quantization grain doesn't
+        # compound over denoise steps — and the LoRA trains against the same
+        # base it will serve on.
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            llm_int8_skip_modules=[
+                "transformer_blocks.0.",
+                "transformer_blocks.59.",
+                "img_in",
+                "txt_in",
+                "proj_out",
+            ],
         )
     transformer = QwenImageTransformer2DModel.from_pretrained(
         cfg.base_model_id, subfolder="transformer", **kwargs

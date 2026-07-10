@@ -19,11 +19,7 @@ from typing import Literal
 
 from PIL import Image
 
-from aura_ml.inference.qwen_edit import (
-    DEFAULT_NUM_STEPS,
-    QwenEditConfig,
-    QwenImageEditPipeline,
-)
+from aura_ml.inference.qwen_edit import QwenEditConfig, QwenImageEditPipeline
 from aura_ml.prompt_expander.qwen35 import (
     ExpanderResult,
     OutOfScopeError,
@@ -119,7 +115,7 @@ class AuraInferencePipeline:
         face_image: Image.Image,
         user_instruction: str,
         procedure: Procedure,
-        num_steps: int = DEFAULT_NUM_STEPS,
+        num_steps: int | None = None,
         seed: int | None = None,
         expand: bool = True,
     ) -> tuple[Image.Image, ExpanderResult]:

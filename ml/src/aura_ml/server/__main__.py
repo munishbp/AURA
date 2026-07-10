@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+
+# GPU VRAM belongs to the editor + expander; run metric models on CPU unless
+# the operator explicitly says otherwise. Must be set before metrics import.
+os.environ.setdefault("AURA_METRICS_DEVICE", "cpu")
 
 import uvicorn
 

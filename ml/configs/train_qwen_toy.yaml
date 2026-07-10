@@ -45,8 +45,10 @@ max_grad_norm: 1.0
 
 output_dir: outputs/toy_glasses
 save_every_epochs: 10
-eval_every_epochs: 10
-eval_holdout_dir: eval_holdout   # synthetic holdout (build_eval_holdout.py --faces-dir)
+eval_every_epochs: 5
+# Held-out faces + GLASSES instructions (built by scripts/run_toy_e2e.sh) —
+# the LoRA is judged on its own task, not the surgical holdout.
+eval_holdout_dir: data/pairs/toy_glasses_holdout
 eval_num_steps: 20
 eval_true_cfg_scale: 4.0
 eval_max_samples: 6

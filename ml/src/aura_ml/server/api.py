@@ -262,7 +262,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         instruction: str,
         procedure: str,
         prompt_override: str | None,
-        num_steps: int,
+        num_steps: int | None,
         seed: int | None,
         use_expander: bool,
         return_metrics: bool,
@@ -293,7 +293,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             prompt_used=prompt_used,
             procedure=procedure,
             seed=seed,
-            num_steps=num_steps,
+            num_steps=num_steps or pipeline.diffuser.default_num_steps,
             expander_used=expander_used,
             latency_s=round(time.monotonic() - t0, 2),
             metrics=metrics,
@@ -305,7 +305,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         instruction: str | None,
         procedure: str,
         prompt_override: str | None,
-        num_steps: int,
+        num_steps: int | None,
         seed: int | None,
     ):
         _check_procedure(procedure)
@@ -313,7 +313,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             prompt_override and prompt_override.strip()
         ):
             raise HTTPException(422, "provide `instruction` or `prompt_override`")
-        if not 4 <= num_steps <= 80:
+        if num_steps is not None and not 4 <= num_steps <= 80:
             raise HTTPException(422, "num_steps must be in [4, 80]")
         return _read_upload(image)
 
@@ -329,7 +329,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         prompt_override: str | None = Form(
             None, description="skip expansion and use this prompt verbatim"
         ),
-        num_steps: int = Form(40),
+        num_steps: int | None = Form(None, description="default: the active recipe (8 with Lightning, 40 without)"),
         seed: int | None = Form(None),
         use_expander: bool = Form(True),
         return_metrics: bool = Form(True),
@@ -379,7 +379,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         instruction: str | None = Form(None),
         procedure: str = Form(...),
         prompt_override: str | None = Form(None),
-        num_steps: int = Form(40),
+        num_steps: int | None = Form(None, description="default: the active recipe (8 with Lightning, 40 without)"),
         seed: int | None = Form(None),
         use_expander: bool = Form(True),
         return_metrics: bool = Form(True),

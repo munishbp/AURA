@@ -11,7 +11,8 @@ The Aura ML pipeline: photo + instruction → realistic surgical-outcome preview
    instruction, with out-of-scope guard + deterministic sanitizer
         │
         ▼
- Qwen-Image-Edit-2511 (NF4, ~17 GB)
+ Qwen-Image-Edit-2511 (selective NF4, ~19 GB)
+   + Lightning 8-step LoRA (serving default: ~10 s/edit, cfg 1.0)
    + optional procedure LoRA (rhinoplasty / facelift / blepharoplasty)
    + optional identity LoRA, composed via set_adapters
         │
@@ -20,6 +21,23 @@ The Aura ML pipeline: photo + instruction → realistic surgical-outcome preview
 ```
 
 Everything fits and runs on a single RTX 5090 (32 GB).
+
+### Quantization + speed recipe (measured on the 5090, seed-42 benchmark face)
+
+| recipe | latency | edit magnitude | ArcFace identity |
+|---|---|---|---|
+| NF4, 40 steps, cfg 4.0 (model-card recipe) | 95 s | 0.191 | 0.553 |
+| NF4 + **Lightning 8-step**, cfg 1.0 ← default | **10 s** | 0.174 | **0.689** |
+| NF4 + Lightning 4-step, cfg 1.0 | 5 s | 0.138 | 0.784 |
+
+NF4 is *selective*: first/last transformer blocks + in/out projections stay
+bf16 (quantization noise compounds across denoise steps and surfaces as
+grain). Fewer steps also means less noise accumulation — that's why Lightning
+improves identity too, not just speed. torchao FP8 was evaluated and
+rejected: `float8dq` OOMs at 32 GB (and can't CPU-offload), and `float8wo`
+silently degraded to returning the input unchanged — edit magnitude 0.0125,
+**caught by the static-image canary**, which is exactly the failure mode it
+was built to catch.
 
 ## Setup
 
@@ -37,6 +55,10 @@ uv run python -m app.demo --host 0.0.0.0 # reachable from your phone on the same
 uv run python -m app.demo --share        # temporary public URL (Gradio tunnel)
 uv run python -m app.demo --no-expander  # save ~7 GB VRAM (rule-based expansion)
 ```
+
+Generation uses the Lightning 8-step recipe by default (~10 s/edit). For the
+40-step model-card recipe, set `QwenEditConfig(lightning="off")` (slower, and
+on the NF4 base measurably *worse* identity — see the table above).
 
 Upload a face photo, pick a procedure, write the instruction. "Expand only"
 shows (and lets you edit) the exact prompt sent to the diffusion model. Each
@@ -56,7 +78,7 @@ uv run python -m aura_ml.server --ui                              # + Gradio at 
 | `GET /v1/health` | GPU, VRAM, what's loaded |
 | `GET /v1/procedures` | supported procedures + example instructions |
 | `POST /v1/expand` | photo + instruction → expanded prompt (~3 s) |
-| `POST /v1/generate` | photo + instruction → edited image, sync (~1–2 min) |
+| `POST /v1/generate` | photo + instruction → edited image, sync (~15 s warm w/ Lightning) |
 | `POST /v1/jobs/generate` | same, async — returns a job id immediately |
 | `GET /v1/jobs/{id}` / `…/image` | poll status / fetch the PNG |
 | `POST /v1/metrics` | score any (before, after, instruction) triple |
