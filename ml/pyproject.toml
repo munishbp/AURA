@@ -32,6 +32,11 @@ eval = [
 demo = [
     "gradio>=5.0.0",
 ]
+serve = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "python-multipart>=0.0.20",
+]
 dev = [
     "ruff>=0.7.0",
     "ipython>=8.30.0",

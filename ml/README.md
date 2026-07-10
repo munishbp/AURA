@@ -33,6 +33,8 @@ uv run python scripts/verify_env.py      # sanity-check torch/CUDA/bitsandbytes
 
 ```bash
 uv run python -m app.demo                # http://localhost:7860
+uv run python -m app.demo --host 0.0.0.0 # reachable from your phone on the same Wi-Fi
+uv run python -m app.demo --share        # temporary public URL (Gradio tunnel)
 uv run python -m app.demo --no-expander  # save ~7 GB VRAM (rule-based expansion)
 ```
 
@@ -40,6 +42,42 @@ Upload a face photo, pick a procedure, write the instruction. "Expand only"
 shows (and lets you edit) the exact prompt sent to the diffusion model. Each
 generation is scored live: the **canary** flags outputs that are secretly
 identical to the input — the failure mode that killed the hackathon build.
+
+## REST API
+
+```bash
+uv sync --extra serve
+uv run python -m aura_ml.server --host 0.0.0.0 --port 8000        # docs at /docs
+uv run python -m aura_ml.server --ui                              # + Gradio at /ui, same pipeline
+```
+
+| endpoint | what |
+|---|---|
+| `GET /v1/health` | GPU, VRAM, what's loaded |
+| `GET /v1/procedures` | supported procedures + example instructions |
+| `POST /v1/expand` | photo + instruction → expanded prompt (~3 s) |
+| `POST /v1/generate` | photo + instruction → edited image, sync (~1–2 min) |
+| `POST /v1/jobs/generate` | same, async — returns a job id immediately |
+| `GET /v1/jobs/{id}` / `…/image` | poll status / fetch the PNG |
+| `POST /v1/metrics` | score any (before, after, instruction) triple |
+
+All generation funnels through one GPU worker + a shared lock, so concurrent
+requests queue instead of OOMing the card. Out-of-scope instructions come
+back as HTTP 422 with the expander's reason.
+
+```bash
+# Expand only
+curl -s -X POST localhost:8000/v1/expand \
+  -F image=@face.jpg -F procedure=rhinoplasty \
+  -F "instruction=make the nose smaller" | jq .prompt
+
+# Async generation
+JOB=$(curl -s -X POST localhost:8000/v1/jobs/generate \
+  -F image=@face.jpg -F procedure=rhinoplasty \
+  -F "instruction=reduce the dorsal hump" | jq -r .job_id)
+curl -s localhost:8000/v1/jobs/$JOB | jq .status
+curl -s localhost:8000/v1/jobs/$JOB/image -o preview.png
+```
 
 ## Eval harness
 

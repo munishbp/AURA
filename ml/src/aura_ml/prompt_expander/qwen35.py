@@ -130,6 +130,12 @@ PROCEDURES: dict[str, ProcedureSpec] = {
     ),
 }
 
+EXAMPLE_INSTRUCTIONS: dict[str, str] = {
+    "rhinoplasty": "Subtle dorsal hump reduction with refined nasal tip",
+    "facelift": "Tighten the lower-face jawline and reduce nasolabial fold",
+    "blepharoplasty": "Reduce upper-lid skin redundancy and refine the supratarsal crease",
+}
+
 _PRESERVE_CLAUSE = (
     "Preserve the person's identity, skin texture and tone, eye color, hairstyle, "
     "facial expression, head pose, lighting, and background exactly as in the "

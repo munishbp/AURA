@@ -12,6 +12,7 @@ This is what the Gradio demo calls. It's the user-facing composition layer.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -63,6 +64,10 @@ class AuraInferencePipeline:
             Qwen35PromptExpander() if self.config.use_prompt_expander else None
         )
         self._loras_registered = False
+        # Serializes diffusion runs when several frontends (API worker,
+        # Gradio UI) share this pipeline — two concurrent 20B denoise loops
+        # would OOM the card.
+        self.gpu_lock = threading.Lock()
 
     # ------------------------------------------------------------------
 

@@ -25,7 +25,7 @@ from aura_ml.inference.pipeline import (
     AuraInferencePipeline,
     build_default_pipeline,
 )
-from aura_ml.prompt_expander.qwen35 import OutOfScopeError
+from aura_ml.prompt_expander.qwen35 import EXAMPLE_INSTRUCTIONS, OutOfScopeError
 
 try:
     from aura_ml.eval.metrics import all_metrics, is_static
@@ -33,13 +33,6 @@ try:
     _HAVE_METRICS = True
 except ImportError:  # eval extra not installed — demo still works
     _HAVE_METRICS = False
-
-
-EXAMPLE_INSTRUCTIONS = {
-    "rhinoplasty": "Subtle dorsal hump reduction with refined nasal tip",
-    "facelift": "Tighten the lower-face jawline and reduce nasolabial fold",
-    "blepharoplasty": "Reduce upper-lid skin redundancy and refine the supratarsal crease",
-}
 
 CSS = """
 /* ── Aura demo skin ─────────────────────────────────────── */
@@ -161,10 +154,13 @@ def build_ui(pipeline: AuraInferencePipeline) -> gr.Blocks:
         else:
             prompt_used = instruction.strip()
 
-        edited, _ = pipeline.generate(
-            face_image, prompt_used, procedure,
-            num_steps=int(steps), seed=seed, expand=False,
-        )
+        # The pipeline may be shared with the REST API (aura_ml.server) —
+        # serialize diffusion runs so two frontends can't OOM the card.
+        with pipeline.gpu_lock:
+            edited, _ = pipeline.generate(
+                face_image, prompt_used, procedure,
+                num_steps=int(steps), seed=seed, expand=False,
+            )
 
         metrics_md = "*(eval extra not installed — `uv sync --extra eval`)*"
         if _HAVE_METRICS:
@@ -256,6 +252,12 @@ def main() -> None:
         help="dir containing per-procedure LoRA checkpoint subdirs",
     )
     p.add_argument("--port", type=int, default=7860)
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address; use 0.0.0.0 to open the app to other devices on "
+        "your network (e.g. upload photos straight from your phone)",
+    )
     p.add_argument("--share", action="store_true", help="public Gradio share link")
     p.add_argument(
         "--no-expander",
@@ -268,7 +270,7 @@ def main() -> None:
         Path(args.checkpoints), use_prompt_expander=not args.no_expander
     )
     demo = build_ui(pipeline)
-    demo.launch(server_port=args.port, share=args.share)
+    demo.launch(server_name=args.host, server_port=args.port, share=args.share)
 
 
 if __name__ == "__main__":
