@@ -1,19 +1,19 @@
 [project]
 name = "aura-ml"
-version = "0.0.0"
-description = "Aura ML pipeline: Qwen-Image-Edit + Qwen3.5-9B prompt expander + procedure LoRAs"
+version = "0.1.0"
+description = "Aura ML pipeline: Qwen-Image-Edit-2511 editor + Qwen3.5-9B prompt expander + procedure LoRAs"
 requires-python = ">=3.11,<3.13"
 
 dependencies = [
-    "torch>=2.7.0",
-    "torchvision>=0.22.0",
-    "transformers>=4.46.0",
-    "diffusers>=0.32.0",
-    "peft>=0.14.0",
-    "accelerate>=1.2.0",
-    "bitsandbytes>=0.45.0",
-    "safetensors>=0.4.5",
-    "huggingface-hub>=0.27.0",
+    "torch>=2.9.0",
+    "torchvision>=0.24.0",
+    "transformers>=5.0.0",
+    "diffusers>=0.36.0",
+    "peft>=0.17.0",
+    "accelerate>=1.6.0",
+    "bitsandbytes>=0.49.0",
+    "safetensors>=0.5.0",
+    "huggingface-hub>=0.34.0",
     "pillow>=11.0.0",
     "numpy>=2.0.0",
     "tqdm>=4.66.0",
@@ -26,11 +26,11 @@ eval = [
     "open-clip-torch>=2.30.0",
     "insightface>=0.7.3",
     "onnxruntime-gpu>=1.20.0",
+    "opencv-python-headless>=4.10.0",
     "scikit-image>=0.24.0",
 ]
 demo = [
     "gradio>=5.0.0",
-    "openai-whisper>=20240930",
 ]
 dev = [
     "ruff>=0.7.0",

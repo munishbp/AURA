@@ -85,8 +85,18 @@ def _load_arcface():
 
 def _largest_face_embedding(img: Image.Image) -> np.ndarray | None:
     app = _load_arcface()
-    arr = np.array(_to_rgb(img))[:, :, ::-1]  # RGB → BGR for insightface
+    rgb = _to_rgb(img)
+    arr = np.array(rgb)[:, :, ::-1]  # RGB → BGR for insightface
     faces = app.get(arr)
+    if not faces:
+        # SCRFD misses faces that fill the whole frame (tight portrait crops —
+        # exactly what this pipeline processes). Retry with a neutral border;
+        # the embedding is landmark-aligned, so padding doesn't distort it.
+        from PIL import ImageOps
+
+        pad = max(rgb.width, rgb.height) // 3
+        padded = ImageOps.expand(rgb, border=pad, fill=(127, 127, 127))
+        faces = app.get(np.array(padded)[:, :, ::-1])
     if not faces:
         return None
     faces.sort(key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]), reverse=True)

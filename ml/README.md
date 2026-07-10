@@ -1,0 +1,106 @@
+# aura-ml
+
+The Aura ML pipeline: photo + instruction → realistic surgical-outcome preview.
+
+```
+ face photo + "make the nose smaller"
+        │
+        ▼
+ Qwen3.5-9B prompt expander (4-bit, ~7 GB)
+   raw shorthand → precise, conservative, anatomically grounded edit
+   instruction, with out-of-scope guard + deterministic sanitizer
+        │
+        ▼
+ Qwen-Image-Edit-2511 (NF4, ~17 GB)
+   + optional procedure LoRA (rhinoplasty / facelift / blepharoplasty)
+   + optional identity LoRA, composed via set_adapters
+        │
+        ▼
+ edited face image → eval metrics (edit-magnitude canary, ArcFace, LPIPS, CLIP)
+```
+
+Everything fits and runs on a single RTX 5090 (32 GB).
+
+## Setup
+
+```bash
+uv sync --extra eval --extra demo        # installs into .venv (Python 3.12)
+bash scripts/download_models.sh          # ~62 GB: Qwen-Image-Edit-2511 + Qwen3.5-9B
+uv run python scripts/verify_env.py      # sanity-check torch/CUDA/bitsandbytes
+```
+
+## Run the demo
+
+```bash
+uv run python -m app.demo                # http://localhost:7860
+uv run python -m app.demo --no-expander  # save ~7 GB VRAM (rule-based expansion)
+```
+
+Upload a face photo, pick a procedure, write the instruction. "Expand only"
+shows (and lets you edit) the exact prompt sent to the diffusion model. Each
+generation is scored live: the **canary** flags outputs that are secretly
+identical to the input — the failure mode that killed the hackathon build.
+
+## Eval harness
+
+```bash
+# Build a holdout. With the HDA database on disk:
+uv run python scripts/build_eval_holdout.py --seed 0
+# Without it (synthetic faces, validates the pipeline only):
+uv run python scripts/fetch_test_faces.py --n 16 --out data/raw/faces
+uv run python scripts/build_eval_holdout.py --faces-dir data/raw/faces --out eval_holdout
+
+# Prove the harness detects both failure and success:
+uv run python scripts/eval_smoke.py --holdout eval_holdout
+
+# Score a model (zero-shot baseline or LoRA checkpoint) against the holdout:
+uv run python -m aura_ml.eval.grid --holdout eval_holdout --checkpoint outputs/rhino/best --out runs/rhino.html
+uv run python -m aura_ml.eval.grid --holdout eval_holdout --outputs-dir runs/baseline/outputs --out runs/baseline.html
+```
+
+Metrics per (source, output, instruction) triple:
+
+| metric | meaning | healthy |
+|---|---|---|
+| edit_magnitude | 1 − cos(DINOv2) — the static-image canary | > 0.05 |
+| arcface_cosine | identity preservation | ≥ 0.6 |
+| lpips | perceptual distance sanity check | 0.05–0.45 |
+| clip_score | instruction followed | ↑ vs zero-shot baseline |
+
+## Training a LoRA
+
+```bash
+# 1. Build a paired dataset (control/target/prompts — see src/aura_ml/data/SCHEMA.md).
+#    From unpaired photos, bootstrap + curate synthetically:
+uv run python -m aura_ml.data.synthetic_pairs data/raw/faces data/pairs/toy_glasses \
+    --procedure toy_glasses --instructions data/instructions/toy_glasses.txt
+
+# 2. Validate it (structure + static-pair canary):
+uv run python -m aura_ml.data.pair_loader data/pairs/toy_glasses --check-edit-magnitude
+
+# 3. Train (QLoRA on the NF4 transformer, flow-matching loss):
+uv run python -m aura_ml.training.train --config configs/train_qwen_toy.yaml
+
+# 4. Every eval interval the trainer scores the holdout and quarantines
+#    checkpoints that trip the static-image canary.
+```
+
+The toy task ("add glasses") is deliberately high-divergence: if the training
+loop is broken in the copy-the-input way, it fails loudly on the first eval.
+
+## Layout
+
+```
+ml/
+├── app/demo.py                    Gradio UI
+├── configs/train_qwen_*.yaml      per-procedure training configs
+├── data/instructions/*.txt        instruction variants for synthetic pairing
+├── scripts/                       env check, model download, holdout build, smoke test
+└── src/aura_ml/
+    ├── inference/qwen_edit.py     Qwen-Image-Edit-2511 wrapper (NF4, LoRA mgmt)
+    ├── inference/pipeline.py      expander → editor → LoRA composition
+    ├── prompt_expander/qwen35.py  Qwen3.5-9B expander + sanitizer + fallback
+    ├── training/train.py          QLoRA flow-matching trainer w/ canary quarantine
+    ├── data/                      pair dataset, validator, synthetic pair curation
+    └── eval/                      metrics + HTML grid + canary flagger
+```
