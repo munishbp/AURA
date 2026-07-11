@@ -1,11 +1,17 @@
-# Workstream 8: blepharoplasty (eyelid) LoRA.
-# Mirrors rhinoplasty rank/alpha — eyelid is small-area, doesn't need extra
-# capacity per the original report.
+# Workstream 8: blepharoplasty procedure LoRA.
+# Hyperparams carry over from the hackathon report (§4.2) with LR lowered for
+# Qwen-Image-Edit (it benefits from lower LRs than FLUX-Kontext recipes).
+#
+# Watch for the "two-bit rule" capacity issue from the report — bump rank if
+# loss plateaus early.
+#
+# Run with:
+#   uv run python -m aura_ml.training.train --config configs/train_qwen_eyelid.yaml
 
 dataset_root: data/pairs/blepharoplasty
-resolution: 768
+resolution: 768     # drop to 512 if 5090 VRAM is tight; bump to 1024 on H100
 
-base_model_id: Qwen/Qwen-Image-Edit-2509
+base_model_id: Qwen/Qwen-Image-Edit-2511
 quantize_4bit: true
 
 rank: 32
@@ -16,23 +22,34 @@ target_modules:
   - to_k
   - to_v
   - to_out.0
-  - ff.net.0.proj
-  - ff.net.2
+  - add_q_proj
+  - add_k_proj
+  - add_v_proj
+  - to_add_out
+  - img_mlp.net.0.proj
+  - img_mlp.net.2
+  - txt_mlp.net.0.proj
+  - txt_mlp.net.2
 
 learning_rate: 1.0e-4
 lr_min: 1.0e-6
 weight_decay: 0.01
 optimizer: adamw_8bit
+timestep_sampling: logit_normal
 
 epochs: 100
 batch_size: 1
 gradient_accumulation_steps: 8
 gradient_checkpointing: true
 mixed_precision: bf16
+max_grad_norm: 1.0
 
 output_dir: outputs/blepharoplasty
 save_every_epochs: 10
 eval_every_epochs: 5
-eval_holdout_dir: data/pairs/blepharoplasty/test
+eval_holdout_dir: eval_holdout
+eval_num_steps: 20
+eval_true_cfg_scale: 4.0
+eval_max_samples: 8
 
 seed: 0

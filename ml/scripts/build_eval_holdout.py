@@ -1,14 +1,22 @@
-"""Build the 100-pair eval holdout from the HDA Facial Plastic Surgery Database.
+"""Build the eval holdout.
 
-HDA convention: `_b.jpg` = before surgery (source for our editor), `_a.jpg` =
-after surgery (visual ground-truth reference). License: research-only,
-non-commercial. The output directory is gitignored.
+Two modes:
 
-Default split: 40 nose / 30 facelift / 30 eyelid, 5-digit zero-padded IDs
-allocated 00001–00040 nose, 00041–00070 facelift, 00071–00100 eyelid.
+1. HDA mode (default) — from the HDA Facial Plastic Surgery Database.
+   Convention: `_b.jpg` = before surgery (source for our editor), `_a.jpg` =
+   after surgery (visual ground-truth reference). License: research-only,
+   non-commercial. Default split: 40 nose / 30 facelift / 30 eyelid.
 
-Run from the repo root:
-    python ml/scripts/build_eval_holdout.py --seed 0
+2. Synthetic mode (`--faces-dir`) — from any directory of face photos (e.g.
+   data/raw/faces produced by fetch_test_faces.py). No reference images;
+   procedure prompts are assigned round-robin. Validates the *pipeline*
+   when the HDA database isn't available on this machine.
+
+The output directory is gitignored either way.
+
+Run from the ml/ directory:
+    uv run python scripts/build_eval_holdout.py --seed 0
+    uv run python scripts/build_eval_holdout.py --faces-dir data/raw/faces --per-procedure 4
 """
 
 from __future__ import annotations
@@ -138,14 +146,81 @@ def build_holdout(hda_root: Path, out_root: Path, seed: int) -> dict:
     return report
 
 
+def build_synthetic_holdout(
+    faces_dir: Path, out_root: Path, per_procedure: int, seed: int
+) -> dict:
+    """Build a holdout from a flat directory of face photos (no references).
+
+    Each procedure gets `per_procedure` distinct faces; prompts are assigned
+    round-robin from that procedure's prompt list."""
+    rng = random.Random(seed)
+    faces = sorted(
+        p for p in faces_dir.iterdir()
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+    needed = per_procedure * len(SPECS)
+    if len(faces) < needed:
+        raise RuntimeError(
+            f"need {needed} faces in {faces_dir} but only found {len(faces)} — "
+            f"run fetch_test_faces.py --n {needed}"
+        )
+    rng.shuffle(faces)
+
+    for sub in ("control", "prompts", "meta"):
+        (out_root / sub).mkdir(parents=True, exist_ok=True)
+
+    report = {"total": 0, "per_procedure": {}, "mode": "synthetic"}
+    face_iter = iter(faces)
+    next_id = 1
+    for spec in SPECS:
+        for i in range(per_procedure):
+            holdout_id = f"{next_id:05d}"
+            next_id += 1
+            src = next(face_iter)
+            shutil.copyfile(src, out_root / "control" / f"{holdout_id}{src.suffix.lower()}")
+            (out_root / "prompts" / f"{holdout_id}.txt").write_text(
+                spec.prompts[i % len(spec.prompts)] + "\n", encoding="utf-8"
+            )
+            (out_root / "meta" / f"{holdout_id}.json").write_text(
+                json.dumps(
+                    {
+                        "procedure": spec.label,
+                        "source": str(src),
+                        "license": "synthetic face (StyleGAN) — unrestricted",
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        report["per_procedure"][spec.label] = per_procedure
+        report["total"] += per_procedure
+    return report
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--hda", default=str(DEFAULT_HDA), help="path to HDA database root")
+    p.add_argument(
+        "--faces-dir",
+        default=None,
+        help="build a synthetic holdout from this directory of face photos instead of HDA",
+    )
+    p.add_argument(
+        "--per-procedure",
+        type=int,
+        default=4,
+        help="faces per procedure in synthetic mode",
+    )
     p.add_argument("--out", default=str(DEFAULT_OUT), help="output holdout directory")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
-    report = build_holdout(Path(args.hda), Path(args.out), args.seed)
+    if args.faces_dir:
+        report = build_synthetic_holdout(
+            Path(args.faces_dir), Path(args.out), args.per_procedure, args.seed
+        )
+    else:
+        report = build_holdout(Path(args.hda), Path(args.out), args.seed)
     print(json.dumps(report, indent=2))
     print(f"wrote holdout to {args.out}")
     return 0

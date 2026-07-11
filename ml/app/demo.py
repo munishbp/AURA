@@ -1,118 +1,44 @@
 """Gradio demo for Aura — surgical outcome visualization.
 
-Takes a face photo + procedure selection + instruction and runs
-Qwen2-VL as an instruction-following image editor.
+Upload a face photo, pick a procedure, type the physician's instruction.
+The Qwen3.5-9B expander turns it into a precise edit instruction, the
+Qwen-Image-Edit-2511 editor applies it, and the eval metrics score the
+result live (including the static-image canary).
 
-Run with:
-    pip install gradio transformers torch pillow qwen-vl-utils
-    python demo.py
-
-Or from the repo root:
+Run from ml/:
+    uv run python -m app.demo
+    uv run python -m app.demo --no-expander      # save ~7 GB VRAM
     uv run python -m app.demo --checkpoints checkpoints/
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
+import math
+import os
 from pathlib import Path
+
+# The demo co-locates the editor (~19 GB) + expander (~7 GB) on the GPU; the
+# metric models (and onnxruntime's greedy CUDA arena) must stay on CPU or
+# scoring OOMs generation. Must be set before aura_ml.eval.metrics loads.
+os.environ.setdefault("AURA_METRICS_DEVICE", "cpu")
 
 import gradio as gr
 from PIL import Image
 
-# ---------------------------------------------------------------------------
-# Inline pipeline (no import dependency on the full aura_ml package)
-# ---------------------------------------------------------------------------
+from aura_ml.inference.pipeline import (
+    PROCEDURES,
+    AuraInferencePipeline,
+    build_default_pipeline,
+)
+from aura_ml.prompt_expander.qwen35 import EXAMPLE_INSTRUCTIONS, OutOfScopeError
 
-def _build_pipeline(checkpoints_dir: Path, use_lora: bool = False):
-    """Build a QwenImageEditPipeline, optionally loading LoRA checkpoints."""
-    # Try importing from the installed package first; fall back to local file.
-    try:
-        from aura_ml.inference.qwen_edit import QwenEditConfig, QwenImageEditPipeline
-    except ImportError:
-        # Running standalone — load from the same directory as this file
-        import importlib.util, os
-        here = Path(__file__).parent
-        spec = importlib.util.spec_from_file_location(
-            "qwen_edit", here / "qwen_edit.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        QwenEditConfig = mod.QwenEditConfig
-        QwenImageEditPipeline = mod.QwenImageEditPipeline
+try:
+    from aura_ml.eval.metrics import all_metrics, is_static
 
-    cfg = QwenEditConfig(
-        auto_device=True,
-    )
-    pipe = QwenImageEditPipeline(cfg)
-
-    if use_lora and checkpoints_dir.is_dir():
-        for proc in ("rhinoplasty", "facelift", "blepharoplasty"):
-            ckpt = checkpoints_dir / proc
-            if ckpt.is_dir():
-                pipe.load_lora(str(ckpt), name=proc)
-                print(f"[demo] loaded LoRA: {proc}")
-
-    return pipe
-
-
-# ---------------------------------------------------------------------------
-# Prompt expander (optional — falls back to raw instruction if unavailable)
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = """You are a surgical-visualization prompt assistant. Given a
-face photo and a brief instruction from a physician, produce a single detailed
-prompt for a diffusion image-editor.
-
-Rules:
-- Stay anatomically realistic. Describe changes in terms of anatomical
-  landmarks (dorsal hump, alar base, nasolabial fold, supratarsal crease,
-  jowl, etc.).
-- Use conservative quantifiers. Prefer "subtle", "moderate", "refined".
-  Avoid "dramatic", "much smaller", "completely".
-- Preserve identity. Always include language asking the editor to maintain
-  the subject's bone structure, skin texture, and core proportions.
-- Output ONE paragraph, no preamble, no explanation. Just the prompt.
-"""
-
-PROCEDURE_HINTS = {
-    "rhinoplasty": (
-        "Procedure context: rhinoplasty. Focus on nasal bridge, "
-        "dorsal hump, tip projection, alar base, columella."
-    ),
-    "facelift": (
-        "Procedure context: rhytidectomy. Focus on jawline definition, "
-        "midface volume, nasolabial fold, marionette lines, jowl."
-    ),
-    "blepharoplasty": (
-        "Procedure context: blepharoplasty. Focus on upper-lid "
-        "skin redundancy, supratarsal crease, lower-lid bags, periorbital hollows."
-    ),
-}
-
-
-def _expand_prompt_simple(instruction: str, procedure: str) -> str:
-    """Rule-based prompt enrichment when the LLM expander isn't available."""
-    hint = PROCEDURE_HINTS.get(procedure, "")
-    return (
-        f"{hint} "
-        f"Apply the following change conservatively and realistically: {instruction}. "
-        "Preserve the subject's identity, skin texture, and overall facial proportions. "
-        "Maintain bilateral symmetry."
-    ).strip()
-
-
-# ---------------------------------------------------------------------------
-# UI builders
-# ---------------------------------------------------------------------------
-
-PROCEDURES = ["rhinoplasty", "facelift", "blepharoplasty"]
-
-EXAMPLE_INSTRUCTIONS = {
-    "rhinoplasty": "Subtle dorsal hump reduction with refined nasal tip",
-    "facelift": "Tighten the lower-face jawline and reduce nasolabial fold",
-    "blepharoplasty": "Reduce upper-lid skin redundancy and refine the supratarsal crease",
-}
+    _HAVE_METRICS = True
+except ImportError:  # eval extra not installed — demo still works
+    _HAVE_METRICS = False
 
 CSS = """
 /* ── Aura demo skin ─────────────────────────────────────── */
@@ -129,7 +55,6 @@ h1, h2, h3 {
     letter-spacing: -0.02em;
 }
 
-/* Header */
 .aura-header {
     text-align: center;
     padding: 2.5rem 1rem 1rem;
@@ -149,15 +74,6 @@ h1, h2, h3 {
     margin: 0.4rem 0 0;
 }
 
-/* Cards */
-.card {
-    background: #16161e;
-    border: 1px solid #2a2a35;
-    border-radius: 12px;
-    padding: 1.25rem;
-}
-
-/* Buttons */
 button.primary-btn, .gr-button-primary {
     background: linear-gradient(135deg, #c8a96e, #a07840) !important;
     border: none !important;
@@ -166,181 +82,177 @@ button.primary-btn, .gr-button-primary {
     border-radius: 8px !important;
     font-family: 'DM Sans', sans-serif !important;
 }
-button.primary-btn:hover {
-    opacity: 0.88;
-}
+button.primary-btn:hover { opacity: 0.88; }
 
-/* Status badge */
-.status-ok   { color: #5aad7a; font-weight: 600; }
-.status-warn { color: #d4955a; font-weight: 600; }
-
-/* Image panels */
 .image-panel label { color: #a89878 !important; font-size: 0.82rem !important; }
-
-/* Instruction box */
 textarea { background: #1e1e28 !important; border-color: #3a3a48 !important; color: #e8e4dc !important; }
 """
 
+_DISCLAIMER = """
+<div style="margin-top:1.5rem; padding:1rem; background:#1a1a22;
+            border:1px solid #2a2a35; border-radius:8px;
+            font-size:0.82rem; color:#666; text-align:center;">
+  ⚠️ For physician consultation and research purposes only.
+  Not a medical device. Outcomes are illustrative and non-binding.
+</div>
+"""
 
-def build_ui(checkpoints_dir: Path) -> gr.Blocks:
-    # Lazy-load the pipeline on first use
-    _state: dict = {"pipe": None}
 
-    def get_pipe():
-        if _state["pipe"] is None:
-            _state["pipe"] = _build_pipeline(checkpoints_dir)
-        return _state["pipe"]
+def _fmt_metrics(metrics: dict[str, float]) -> str:
+    """Render the four metrics + canary verdict as markdown."""
+    def fmt(v: float) -> str:
+        return "—" if (v is None or (isinstance(v, float) and math.isnan(v))) else f"{v:.3f}"
 
-    def run(
-        face_image,
-        instruction: str,
-        procedure: str,
-        seed_raw,
-        use_expander: bool,
-    ):
+    static = is_static(metrics)
+    canary = (
+        '🔴 **CANARY** — output ≈ input (static-image collapse)'
+        if static
+        else "🟢 real edit detected"
+    )
+    identity_note = ""
+    af = metrics.get("arcface_cosine")
+    if af is not None and not math.isnan(af) and af < 0.6:
+        identity_note = " · ⚠️ identity drift (ArcFace < 0.6)"
+    return (
+        f"{canary}{identity_note}\n\n"
+        f"| edit magnitude | ArcFace identity | LPIPS | CLIPScore |\n"
+        f"|---|---|---|---|\n"
+        f"| {fmt(metrics.get('edit_magnitude'))} | {fmt(metrics.get('arcface_cosine'))} "
+        f"| {fmt(metrics.get('lpips'))} | {fmt(metrics.get('clip_score'))} |"
+    )
+
+
+def build_ui(pipeline: AuraInferencePipeline) -> gr.Blocks:
+    def expand_only(face_image, instruction: str, procedure: str, seed_raw):
         if face_image is None:
             raise gr.Error("Please upload a face photo first.")
         if not instruction.strip():
             raise gr.Error("Please enter an instruction (e.g. 'narrow the nasal tip').")
+        seed = int(seed_raw) if seed_raw and int(seed_raw) > 0 else None
+        try:
+            result = pipeline.expand_prompt(face_image, instruction, procedure, seed=seed)
+        except OutOfScopeError as e:
+            raise gr.Error(f"Instruction out of scope for {procedure}: {e}") from e
+        note = " (rule-based fallback)" if result.used_fallback else ""
+        gr.Info(f"Prompt expanded in {result.latency_s:.1f}s{note}")
+        return result.prompt
+
+    def run(face_image, instruction: str, procedure: str, prompt_override: str,
+            steps: int, seed_raw, use_expander: bool):
+        if face_image is None:
+            raise gr.Error("Please upload a face photo first.")
+        if not instruction.strip() and not prompt_override.strip():
+            raise gr.Error("Please enter an instruction (e.g. 'narrow the nasal tip').")
 
         seed = int(seed_raw) if seed_raw and int(seed_raw) > 0 else None
+        face_image = face_image.convert("RGB")
 
-        # Expand prompt
-        if use_expander:
-            expanded = _expand_prompt_simple(instruction, procedure)
+        # A hand-edited prompt in the expanded box wins over re-expansion.
+        if prompt_override.strip():
+            prompt_used = prompt_override.strip()
+        elif use_expander:
+            try:
+                prompt_used = pipeline.expand_prompt(
+                    face_image, instruction, procedure, seed=seed
+                ).prompt
+            except OutOfScopeError as e:
+                raise gr.Error(f"Instruction out of scope for {procedure}: {e}") from e
         else:
-            expanded = instruction
+            prompt_used = instruction.strip()
 
-        pipe = get_pipe()
+        # The pipeline may be shared with the REST API (aura_ml.server) —
+        # serialize diffusion runs so two frontends can't OOM the card.
+        with pipeline.gpu_lock:
+            edited, _ = pipeline.generate(
+                face_image, prompt_used, procedure,
+                num_steps=int(steps), seed=seed, expand=False,
+            )
 
-        # Activate procedure LoRA if loaded
-        if procedure in pipe._loaded_loras:
-            pipe.set_active_loras([procedure], [0.7])
+        metrics_md = "*(eval extra not installed — `uv sync --extra eval`)*"
+        if _HAVE_METRICS:
+            metrics_md = _fmt_metrics(all_metrics(face_image, edited, prompt_used))
 
-        edited = pipe.generate(
-            image=face_image,
-            prompt=expanded,
-            seed=seed,
-        )
-        return edited, expanded
+        return edited, prompt_used, metrics_md
 
     def fill_example(procedure: str) -> str:
         return EXAMPLE_INSTRUCTIONS.get(procedure, "")
 
-    with gr.Blocks(title="Aura — Surgical Preview") as demo:
-
-        # ── Header ──────────────────────────────────────────────────────
+    theme = gr.themes.Base(primary_hue="amber", neutral_hue="slate")
+    with gr.Blocks(title="Aura — Surgical Preview", css=CSS, theme=theme) as demo:
         gr.HTML("""
         <div class="aura-header">
           <h1>Aura</h1>
-          <p>Surgical outcome visualization · Powered by Qwen-Image-Edit</p>
+          <p>Surgical outcome visualization · Qwen-Image-Edit-2511 + Qwen3.5-9B</p>
         </div>
         """)
 
-        # ── Main layout ─────────────────────────────────────────────────
         with gr.Row():
-
             # ── Left column: inputs ─────────────────────────────────────
             with gr.Column(scale=1):
                 gr.Markdown("### Input")
-
-                face = gr.Image(
-                    type="pil",
-                    label="Face photo",
-                    elem_classes=["image-panel"],
-                )
-
-                proc = gr.Dropdown(
-                    choices=PROCEDURES,
-                    value="rhinoplasty",
-                    label="Procedure",
-                )
-
+                face = gr.Image(type="pil", label="Face photo", elem_classes=["image-panel"])
+                proc = gr.Dropdown(choices=list(PROCEDURES), value="rhinoplasty", label="Procedure")
                 instr = gr.Textbox(
-                    lines=4,
+                    lines=3,
                     label="Physician instruction",
                     placeholder="e.g. narrow the nasal tip and reduce the dorsal hump",
                 )
-
                 with gr.Row():
                     example_btn = gr.Button("Fill example", size="sm")
+                    expand_btn = gr.Button("Expand only", size="sm")
                     clear_btn = gr.Button("Clear", size="sm")
 
+                expanded_prompt = gr.Textbox(
+                    label="Expanded prompt (editable — used as-is if filled)",
+                    lines=5,
+                )
+
                 with gr.Accordion("Advanced options", open=False):
-                    seed_input = gr.Number(
-                        label="Seed (0 = random)",
-                        value=0,
-                        precision=0,
+                    steps = gr.Slider(
+                        4, 60,
+                        value=pipeline.diffuser.default_num_steps,
+                        step=1, label="Diffusion steps",
                     )
+                    seed_input = gr.Number(label="Seed (0 = random)", value=0, precision=0)
                     use_expander = gr.Checkbox(
-                        label="Use prompt expander (anatomical enrichment)",
-                        value=True,
+                        label="Use VLM prompt expander", value=pipeline.expander is not None,
+                        interactive=pipeline.expander is not None,
                     )
 
                 generate_btn = gr.Button(
-                    "Generate Preview",
-                    variant="primary",
-                    elem_classes=["primary-btn"],
+                    "Generate Preview", variant="primary", elem_classes=["primary-btn"]
                 )
 
             # ── Right column: outputs ────────────────────────────────────
             with gr.Column(scale=1):
                 gr.Markdown("### Output")
-
                 out_img = gr.Image(
-                    type="pil",
-                    label="Surgical preview",
-                    elem_classes=["image-panel"],
-                    interactive=False,
+                    type="pil", label="Surgical preview",
+                    elem_classes=["image-panel"], interactive=False,
                 )
+                metrics_box = gr.Markdown(label="Eval metrics")
 
-                expanded_prompt = gr.Textbox(
-                    label="Expanded prompt sent to model",
-                    lines=5,
-                    interactive=False,
-                )
-
-        # ── Disclaimer ───────────────────────────────────────────────────
-        gr.HTML("""
-        <div style="margin-top:1.5rem; padding:1rem; background:#1a1a22;
-                    border:1px solid #2a2a35; border-radius:8px;
-                    font-size:0.82rem; color:#666; text-align:center;">
-          ⚠️ For physician consultation and research purposes only.
-          Not a medical device. Outcomes are illustrative and non-binding.
-        </div>
-        """)
+        gr.HTML(_DISCLAIMER)
 
         # ── Event wiring ─────────────────────────────────────────────────
         generate_btn.click(
             fn=run,
-            inputs=[face, instr, proc, seed_input, use_expander],
-            outputs=[out_img, expanded_prompt],
+            inputs=[face, instr, proc, expanded_prompt, steps, seed_input, use_expander],
+            outputs=[out_img, expanded_prompt, metrics_box],
         )
-
-        example_btn.click(
-            fn=fill_example,
-            inputs=[proc],
-            outputs=[instr],
+        expand_btn.click(
+            fn=expand_only,
+            inputs=[face, instr, proc, seed_input],
+            outputs=[expanded_prompt],
         )
-
-        clear_btn.click(
-            fn=lambda: ("", None, ""),
-            outputs=[instr, out_img, expanded_prompt],
-        )
-
-        # Auto-fill example when procedure changes
-        proc.change(
-            fn=fill_example,
-            inputs=[proc],
-            outputs=[instr],
-        )
+        example_btn.click(fn=fill_example, inputs=[proc], outputs=[instr])
+        proc.change(fn=fill_example, inputs=[proc], outputs=[instr])
+        # A stale expanded prompt must not override a freshly edited instruction.
+        instr.change(fn=lambda: "", outputs=[expanded_prompt])
+        clear_btn.click(fn=lambda: ("", None, "", ""), outputs=[instr, out_img, expanded_prompt, metrics_box])
 
     return demo
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Aura surgical preview demo")
@@ -350,22 +262,25 @@ def main() -> None:
         help="dir containing per-procedure LoRA checkpoint subdirs",
     )
     p.add_argument("--port", type=int, default=7860)
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address; use 0.0.0.0 to open the app to other devices on "
+        "your network (e.g. upload photos straight from your phone)",
+    )
     p.add_argument("--share", action="store_true", help="public Gradio share link")
     p.add_argument(
-        "--no-lora",
+        "--no-expander",
         action="store_true",
-        help="skip LoRA loading (useful when checkpoints aren't ready yet)",
+        help="skip the Qwen3.5-9B expander (~7 GB VRAM saved; rule-based expansion instead)",
     )
     args = p.parse_args()
 
-    ckpt_dir = Path(args.checkpoints)
-    demo = build_ui(ckpt_dir)
-    demo.launch(
-        server_port=args.port,
-        share=args.share,
-        css=CSS,
-        theme=gr.themes.Base(primary_hue="amber", neutral_hue="slate"),
+    pipeline = build_default_pipeline(
+        Path(args.checkpoints), use_prompt_expander=not args.no_expander
     )
+    demo = build_ui(pipeline)
+    demo.launch(server_name=args.host, server_port=args.port, share=args.share)
 
 
 if __name__ == "__main__":

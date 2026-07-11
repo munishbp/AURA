@@ -9,19 +9,46 @@ state, and what's next. Updates appended at the bottom.
 
 ---
 
-## Status (April 2026)
+## Status (July 2026 — `fable` branch)
 
-The hackathon code in this repo is **frozen**. The new ML pipeline is being
-rebuilt from scratch in a separate sibling directory `aura-ml/` (not yet
-pushed). The hackathon stack — DreamOmni2 on FLUX.1-Kontext, Qwen2.5-VL prompt
-expander, AMD MI300X / ROCm, iOS LiDAR app, Express backend, React frontend —
-is being dropped end-to-end.
+The hackathon code in this repo is **frozen**. The rebuilt ML pipeline lives
+in **`ml/`** in this repo (the separate `aura-ml/` sibling-repo plan was
+dropped; it's simpler as one repo). The hackathon stack — DreamOmni2 on
+FLUX.1-Kontext, Qwen2.5-VL prompt expander, AMD MI300X / ROCm, iOS LiDAR app,
+Express backend, React frontend — is gone end-to-end.
 
-**Where we are right now**: workstream 0 (env + scaffolding) is done in
-`aura-ml/`. Nothing trained yet. Nothing running yet. Next thing to do is run
-`verify_env.py` on the 5090 box and pull the two base models.
+**Where we are right now**: the pipeline is implemented and running on the
+5090 box. Editor is **Qwen-Image-Edit-2511** (newest open Qwen edit model,
+NF4-quantized, ~17 GB), expander is **Qwen3.5-9B** (4-bit, ~7 GB) with a
+tightened prompt contract (strict output structure, conservative-magnitude
+enforcement, out-of-scope guard, deterministic sanitizer + rule-based
+fallback). The eval harness with the static-image canary is wired end-to-end,
+and `ml/src/aura_ml/training/train.py` is a full QLoRA flow-matching trainer
+that mirrors the diffusers pipeline's conditioning exactly and auto-quarantines
+checkpoints that trip the canary. See `ml/README.md` for the quickstart.
+
+What's still open: procedure LoRAs need real paired data (HDA database or
+curated synthetic pairs) — the training loop is validated on the toy task.
 
 ---
+
+## Results
+
+"shave the dorsal hump down" on a synthetic (StyleGAN) face — zero-shot
+Qwen-Image-Edit-2511 vs the same edit with our rhinoplasty LoRA composed in.
+The LoRA was trained on real before/after pairs and renders visibly cleaner
+than the quantized base while keeping the edit conservative:
+
+![input vs zero-shot vs rhinoplasty LoRA](docs/examples/rhinoplasty_comparison.jpg)
+
+The toy task that validated the training loop — an "add glasses" LoRA applied
+to a face it never saw during training (high-divergence on purpose, so
+identity collapse fails loudly on the eval canary):
+
+![toy glasses LoRA on a held-out face](docs/examples/toy_glasses_proof.jpg)
+
+All faces here are StyleGAN-synthetic; the HDA imagery used for training and
+eval is research-only and never committed.
 
 ## Background
 
@@ -129,15 +156,15 @@ A few things piled up after the hackathon and we never got back to it cleanly:
 
 ## What's changed for the rebuild
 
-| Layer | Hackathon (Oct 2025) | Rebuild (Apr 2026) |
+| Layer | Hackathon (Oct 2025) | Rebuild (Jul 2026) |
 |---|---|---|
-| Diffusion model | DreamOmni2 (FLUX.1-Kontext, non-commercial license, paper-repo code) | **Qwen-Image-Edit-2509** (Apache 2.0; SOTA for instruction edits per Apr 2026 community benchmarks; first-class `ai-toolkit` support) |
-| Prompt expander | Qwen2.5-VL-7B | **Qwen3.5-9B** (released Mar 2026; unified VLM, 262K context, beats Qwen3-VL on visual reasoning) |
-| Training scaffold | Custom PyTorch on ROCm | `ai-toolkit` (ostris) on top of `diffusers` + `peft` |
-| Hardware | AMD MI300X 192 GB / ROCm | RTX 5090 32 GB / CUDA 12.8 (Blackwell sm_120), Vast.ai H100 escape valve |
+| Diffusion model | DreamOmni2 (FLUX.1-Kontext, non-commercial license, paper-repo code) | **Qwen-Image-Edit-2511** (Apache 2.0; Dec 2025, newest open Qwen edit model — less drift, much better identity/character consistency than 2509) |
+| Prompt expander | Qwen2.5-VL-7B | **Qwen3.5-9B** (Mar 2026; unified early-fusion VLM) + tightened contract: fixed region→change→preserve structure, banned-amplifier substitution, OUT_OF_SCOPE guard, template fallback |
+| Training scaffold | Custom PyTorch on ROCm | Self-contained QLoRA trainer on `diffusers` + `peft` (`ml/src/aura_ml/training/train.py`), conditioning cached so the 7B text encoder never competes with training for VRAM |
+| Hardware | AMD MI300X 192 GB / ROCm | RTX 5090 32 GB / CUDA 12.8 (Blackwell sm_120) — everything NF4/4-bit quantized to fit |
 | Capture | iOS app + LiDAR + Express + React + Swift | **Plain photo upload** in a single Gradio file |
-| Identity preservation | Not addressed (system "overshot" — report §7.2) | Identity / likeness LoRA composed with procedure LoRA at inference |
-| Eval | Manual eyeballing | Holdout grid with ArcFace cosine, **edit-magnitude (static-image canary)**, LPIPS, CLIPScore |
+| Identity preservation | Not addressed (system "overshot" — report §7.2) | 2511's native consistency + preserve-clause enforced in every prompt + ArcFace floor in eval; identity LoRA composition supported at inference |
+| Eval | Manual eyeballing | Holdout grid with ArcFace cosine, **edit-magnitude (static-image canary)**, LPIPS, CLIPScore; live metrics in the demo; canary auto-quarantine in training |
 
 ### Why Qwen and not FLUX
 
@@ -149,6 +176,13 @@ Apr 2026), (c) Qwen ships native paired-data training conventions in
 weights are freely distributable if we ever want to share anything. We
 considered FLUX.2 [dev] but it's 32B and really wants 80 GB VRAM — overkill on
 a 5090.
+
+Re-checked July 2026: **2511 over 2509** — same `QwenImageEditPlusPipeline`,
+same Apache 2.0, but materially better character consistency (the metric this
+project is graded on) and less image drift. Qwen-Image-2.0 (Feb 2026) would be
+tempting — 7B, unified gen+edit, native 2K — but it's Qwen-Chat-only with no
+open weights, so it's out. Training and serving both happen on 2511 so the
+adapter/base always match (pre-mortem #4/#5).
 
 ### Why Qwen3.5-9B for the prompt expander
 
@@ -204,16 +238,16 @@ Training stays at 512–768px batch 1 + accumulation 4–8.
 
 | # | Workstream | Status | Est. |
 |---|---|---|---|
-| 0 | Repo init, env, model downloads | **Done** (skeleton + scripts in `aura-ml/`) | ½ wk |
-| 1 | Zero-shot Qwen-Image-Edit-2509 inference baseline | Logan handle this and get baseline results for nose jobs (Due 5/17/26) | 1 wk |
-| 2 | Eval harness with **static-image canary** | Munish wire together (Due 5/17/26) | 1 wk |
-| 3 | Qwen3.5-9B prompt-expander module | Munish explore training protocol (Due 5/17/26) | ½ wk |
-| 4 | Minimal `train.py` against `diffusers` (toy task: "add glasses") | Pending | 1 wk |
-| 5 | Migrate to `ai-toolkit` | Pending | ½ wk |
-| 6 | Real LoRA training — rhinoplasty first | Pending | 1–2 wk |
-| 7 | Identity-preservation LoRA + composition | Pending | ½ wk |
-| 8 | Other two procedures (facelift, eyelid) | Pending | ½ wk |
-| 9 | Gradio demo UI | Pending | ½ wk |
+| 0 | Repo init, env, model downloads | **Done** | ½ wk |
+| 1 | Zero-shot Qwen-Image-Edit-2511 inference baseline | **Done** (`ml/src/aura_ml/inference/qwen_edit.py`, NF4 on the 5090) | 1 wk |
+| 2 | Eval harness with **static-image canary** | **Done** (`ml/src/aura_ml/eval/`, smoke-tested both directions) | 1 wk |
+| 3 | Qwen3.5-9B prompt-expander module | **Done** (`ml/src/aura_ml/prompt_expander/qwen35.py` — tightened contract + guardrails + stdio service) | ½ wk |
+| 4 | `train.py` against `diffusers` (toy task: "add glasses") | **Done** (full QLoRA flow-matching trainer w/ conditioning cache + canary quarantine) | 1 wk |
+| 5 | Migrate to `ai-toolkit` | Dropped — own trainer mirrors the pipeline exactly and stays debuggable; revisit only if we need its recipes | ½ wk |
+| 6 | Real LoRA training — rhinoplasty first | **Blocked on paired data** (loop validated on toy task; synthetic-pair curation implemented in `data/synthetic_pairs.py`) | 1–2 wk |
+| 7 | Identity-preservation LoRA + composition | Composition path done (`set_adapters` w/ sidecar assert); per-subject training pending | ½ wk |
+| 8 | Other two procedures (facelift, eyelid) | Configs ready; blocked on 6 | ½ wk |
+| 9 | Gradio demo UI | **Done** (`ml/app/demo.py` — editable expanded prompt, live metrics + canary badge) | ½ wk |
 
 "Wk" = a weekend's worth of focused work, not calendar weeks. Realistic total:
 3–6 months at our pace.
@@ -263,33 +297,32 @@ Realities to plan around:
 ## Repo state
 
 ```
-AURA/                            ← this repo, FROZEN
-├── app/                         iOS app (Swift, ARKit, LiDAR) — not being touched
-├── backend/                     Express + node-ssh — not being touched
-├── frontend/                    React + Vite — not being touched
+AURA/                            ← this repo
+├── app/                         iOS app (Swift, ARKit, LiDAR) — FROZEN hackathon code
+├── backend/                     Express + node-ssh — FROZEN hackathon code
+├── frontend/                    React + Vite — FROZEN hackathon code
 ├── Aura_Tech_Report.pdf         the 17-page hackathon writeup; useful background
 ├── package.json                 vestigial
-└── README.md                    this file
-
-../aura-ml/                      ← new repo, ACTIVE
-├── pyproject.toml               uv-managed, torch from cu128 index
-├── scripts/
-│   ├── verify_env.py            sanity-check the 5090 box
-│   └── download_models.sh       pulls Qwen-Image-Edit-2509 + Qwen3.5-9B (~58 GB)
-├── src/aura_ml/
-│   ├── inference/               qwen_edit.py (W1), pipeline.py (W7)
-│   ├── prompt_expander/         qwen35.py (W3)
-│   ├── training/                train.py (W4)
-│   ├── data/                    pair_loader.py (W6), synthetic_pairs.py (W6)
-│   └── eval/                    metrics.py + grid.py (W2)
-├── configs/                     ai-toolkit YAML configs (W5+)
-├── app/                         demo.py (W9)
-└── notebooks/                   exploration only
+├── README.md                    this file
+└── ml/                          ← ACTIVE — the rebuilt pipeline (see ml/README.md)
+    ├── pyproject.toml           uv-managed, torch from cu128 index, Python 3.12
+    ├── scripts/                 verify_env, download_models (2511 + Qwen3.5-9B ~62 GB),
+    │                            fetch_test_faces, build_eval_holdout, eval_smoke
+    ├── src/aura_ml/
+    │   ├── inference/           qwen_edit.py (NF4 wrapper + LoRA mgmt), pipeline.py
+    │   ├── prompt_expander/     qwen35.py (tightened expander + stdio service)
+    │   ├── training/            train.py (QLoRA flow-matching + canary quarantine)
+    │   ├── data/                pair_loader.py, synthetic_pairs.py, SCHEMA.md
+    │   └── eval/                metrics.py + grid.py (canary lives here)
+    ├── configs/                 per-procedure training YAMLs
+    ├── data/instructions/       instruction variants for synthetic pairing
+    └── app/                     demo.py (Gradio)
 ```
 
-`aura-ml/` is intentionally a separate repo — no point dragging the iOS / Node
-/ React baggage along. We can re-introduce a web frontend later by adding a
-FastAPI module that imports the same inference code.
+The old plan had this as a separate `aura-ml` repo; keeping it as `ml/` in
+this repo turned out simpler — the frozen hackathon dirs don't get in the way.
+A web frontend can return later as a FastAPI module importing the same
+inference code.
 
 ---
 
@@ -305,6 +338,70 @@ FastAPI module that imports the same inference code.
   Next: actually run `verify_env.py` on the 5090, pull the models, write
   workstream 1.
 
+- **2026-07-10 (Munish, `fable` branch)** — Finished the
+  pipeline, verified end-to-end on the 5090.
+
+  *Models*: editor bumped 2509 → **Qwen-Image-Edit-2511** (better identity
+  consistency; same pipeline class), expander implemented on **Qwen3.5-9B**
+  4-bit with a tightened contract (fixed region→change→preserve output
+  structure, conservative-quantifier enforcement, OUT_OF_SCOPE guard,
+  sanitizer, rule-based fallback, stdio service mode). Serving recipe locked
+  after measurement: selective NF4 (first/last blocks bf16) + **Lightning
+  8-step LoRA** — ArcFace 0.55 → 0.69 at 10× speed vs the 40-step recipe;
+  torchao FP8 evaluated and rejected (float8dq OOMs; float8wo silently
+  returned the input — caught by the canary, fittingly).
+
+  *Code*: rewrote `inference/qwen_edit.py` for quantized loading (the old
+  code put 40 GB bf16 on a 32 GB card), fixed the `pipeline.py` config-drift
+  crash, implemented `pair_loader`, `synthetic_pairs` (two-phase curation:
+  metric floors then VLM judge, editor and critic never share the GPU), and
+  a full QLoRA flow-matching `train.py` that mirrors
+  `QwenImageEditPlusPipeline` conditioning exactly (packed latents,
+  sequence-concat control, template-64 prompt embeds, dynamic-shift sigmas,
+  norm-preserving CFG in eval) with conditioning caching and canary
+  auto-quarantine. Old configs' FLUX-style `target_modules` (`ff.net.*`)
+  matched nothing on the Qwen transformer — replaced with the real module
+  names. Rebuilt the Gradio demo on the package (editable expanded prompt,
+  live metrics + canary badge, `--host` for phone uploads) and added a
+  proper REST API (`aura_ml.server`): expand / generate (sync + async jobs)
+  / metrics / health, one GPU worker + shared lock, OpenAPI docs at `/docs`.
+
+  *Verified*: expander smoke (aggressive language toned down, identity-change
+  request → OUT_OF_SCOPE, 2.5 s/call at 7.3 GB); eval smoke both directions
+  (identity fixture trips canary at 100%, edited fixture 0%); zero-shot
+  baseline through the API (21.5 s total for expand + edit + metrics,
+  ArcFace 0.69, canary quiet); **toy "add glasses" training run**: 12
+  synthetic faces → 8 curated pairs (VLM critic 0.90–1.00) → QLoRA r=16
+  (106 M params) → epoch-5 eval on held-out faces: glasses visibly present,
+  static=0%, ArcFace 0.67, checkpoint auto-promoted to best/. The
+  identity-collapse failure that killed the hackathon is demonstrably absent
+  from this loop.
+
+  *Repo hygiene*: `ml/` folded into this repo, Windows-mangled UTF-16
+  `requirements.txt` dropped (uv.lock is the source of truth), redundant
+  `app/qwen_edit.py` shim deleted.
+
+  *HDA arrived same day* (research-only license; results must cite Rathgeb
+  et al., CVPRW 2020; imagery gitignored everywhere): built the real
+  100-entry eval holdout (40 rhino / 30 facelift / 30 eyelid, with
+  ground-truth "after" references), then 134 real rhinoplasty training
+  triples with **per-pair instructions written by Qwen3.5-9B** looking at
+  each before/after (all 134 passed the sanitizer; holdout stems excluded
+  from training — no leakage).
+
+  *First real rhinoplasty LoRA* (rank 32, 512 px, 30 epochs on the 134
+  pairs): the run hugged the under-editing boundary the whole way — the
+  canary tripped at epochs 9, 12 and 21 (62% of holdout outputs under the
+  0.05 floor) and those checkpoints were auto-quarantined; late in the run
+  it settled at 25–38% static with ArcFace ~0.79. Best checkpoint (epoch 15)
+  makes visibly real but conservative nose edits on holdout faces and
+  renders noticeably cleaner than zero-shot. Calibration on the holdout
+  itself says the floor is fair: real before→after surgery pairs measure
+  median 0.131 edit magnitude, only 3/40 below 0.05. Run #2 levers: drop
+  the lowest-edit-magnitude training quartile, region-weighted loss around
+  the nose. Remaining: facelift + eyelid LoRAs (same command, different
+  `--procedure`), per-subject identity LoRA.
+
 ---
 
 ## Reference material
@@ -313,6 +410,14 @@ FastAPI module that imports the same inference code.
   of the hackathon stack, training methodology, AMD-specific bits, and the
   retrospective in §8 (data quality, model capacity, time management). Worth
   re-reading before resuming.
+- **HDA Facial Plastic Surgery Database** — real before/after pairs used for
+  the eval holdout and procedure-LoRA training. Research use only, no
+  commercial use or redistribution; the imagery must never be committed to
+  this repo (gitignored), and LoRA weights trained on it stay private. All
+  reported results must cite: C. Rathgeb, D. Dogan, F. Stockhardt,
+  M. De Marsico, C. Busch, "Plastic Surgery: An Obstacle for Deep Face
+  Recognition?", 15th IEEE CVPR Workshop on Biometrics (CVPRW),
+  pp. 3510–3517, 2020.
 - Devpost: <https://devpost.com/software/aura-shaping-the-future-you>
 - Knight Hacks VIII: <https://knighthacksviii.devpost.com/>
 - DreamOmni2 paper: <https://arxiv.org/html/2510.06679v1> (now superseded for

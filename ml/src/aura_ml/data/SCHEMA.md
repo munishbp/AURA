@@ -1,7 +1,7 @@
 # Dataset schema
 
 aura-ml's training data follows the **ai-toolkit `control / target / test`
-folder convention** for paired-edit LoRA training on Qwen-Image-Edit-2509.
+folder convention** for paired-edit LoRA training on Qwen-Image-Edit-2511.
 
 ## On-disk layout
 
