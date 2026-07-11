@@ -321,27 +321,59 @@ inference code.
   workstream 1.
 
 - **2026-07-10 (Munish, `fable` branch)** — Finished the
-  pipeline. Model refresh: editor bumped 2509 → **Qwen-Image-Edit-2511**
-  (better identity consistency; same pipeline class), expander implemented on
-  **Qwen3.5-9B** 4-bit with a tightened contract (fixed region→change→preserve
-  output structure, conservative-quantifier enforcement, OUT_OF_SCOPE guard,
-  sanitizer, rule-based fallback, stdio service mode). Rewrote
-  `inference/qwen_edit.py` for NF4 (bf16 didn't fit 32 GB; the old code would
-  have OOM'd), fixed the `pipeline.py`/config drift crash, implemented
-  `pair_loader`, `synthetic_pairs` (metric + VLM-judge curation), and a full
-  QLoRA flow-matching `train.py` that mirrors `QwenImageEditPlusPipeline`
-  conditioning exactly (packed latents, sequence-concat control, template-64
-  prompt embeds, dynamic-shift sigmas, norm-preserving CFG in eval) with
-  conditioning caching and canary auto-quarantine. Old configs' FLUX-style
-  `target_modules` (`ff.net.*`) would have failed on the Qwen transformer —
-  replaced with the real module names (attn both streams + img/txt MLPs).
-  Rebuilt the Gradio demo on the package with editable expanded prompts and
-  live metrics. Repo hygiene: `ml/` folded into this repo, Windows-mangled
-  UTF-16 `requirements.txt` dropped (uv.lock is the source of truth),
-  redundant `app/qwen_edit.py` shim deleted. Verified on the 5090:
-  zero-shot baseline, expander outputs, eval smoke both directions, toy
-  training run. Remaining: real paired data for procedure LoRAs (HDA
-  application or aggressive synthetic curation), per-subject identity LoRA.
+  pipeline, verified end-to-end on the 5090.
+
+  *Models*: editor bumped 2509 → **Qwen-Image-Edit-2511** (better identity
+  consistency; same pipeline class), expander implemented on **Qwen3.5-9B**
+  4-bit with a tightened contract (fixed region→change→preserve output
+  structure, conservative-quantifier enforcement, OUT_OF_SCOPE guard,
+  sanitizer, rule-based fallback, stdio service mode). Serving recipe locked
+  after measurement: selective NF4 (first/last blocks bf16) + **Lightning
+  8-step LoRA** — ArcFace 0.55 → 0.69 at 10× speed vs the 40-step recipe;
+  torchao FP8 evaluated and rejected (float8dq OOMs; float8wo silently
+  returned the input — caught by the canary, fittingly).
+
+  *Code*: rewrote `inference/qwen_edit.py` for quantized loading (the old
+  code put 40 GB bf16 on a 32 GB card), fixed the `pipeline.py` config-drift
+  crash, implemented `pair_loader`, `synthetic_pairs` (two-phase curation:
+  metric floors then VLM judge, editor and critic never share the GPU), and
+  a full QLoRA flow-matching `train.py` that mirrors
+  `QwenImageEditPlusPipeline` conditioning exactly (packed latents,
+  sequence-concat control, template-64 prompt embeds, dynamic-shift sigmas,
+  norm-preserving CFG in eval) with conditioning caching and canary
+  auto-quarantine. Old configs' FLUX-style `target_modules` (`ff.net.*`)
+  matched nothing on the Qwen transformer — replaced with the real module
+  names. Rebuilt the Gradio demo on the package (editable expanded prompt,
+  live metrics + canary badge, `--host` for phone uploads) and added a
+  proper REST API (`aura_ml.server`): expand / generate (sync + async jobs)
+  / metrics / health, one GPU worker + shared lock, OpenAPI docs at `/docs`.
+
+  *Verified*: expander smoke (aggressive language toned down, identity-change
+  request → OUT_OF_SCOPE, 2.5 s/call at 7.3 GB); eval smoke both directions
+  (identity fixture trips canary at 100%, edited fixture 0%); zero-shot
+  baseline through the API (21.5 s total for expand + edit + metrics,
+  ArcFace 0.69, canary quiet); **toy "add glasses" training run**: 12
+  synthetic faces → 8 curated pairs (VLM critic 0.90–1.00) → QLoRA r=16
+  (106 M params) → epoch-5 eval on held-out faces: glasses visibly present,
+  static=0%, ArcFace 0.67, checkpoint auto-promoted to best/. The
+  identity-collapse failure that killed the hackathon is demonstrably absent
+  from this loop.
+
+  *Repo hygiene*: `ml/` folded into this repo, Windows-mangled UTF-16
+  `requirements.txt` dropped (uv.lock is the source of truth), redundant
+  `app/qwen_edit.py` shim deleted.
+
+  *HDA arrived same day* (research-only license; results must cite Rathgeb
+  et al., CVPRW 2020; imagery gitignored everywhere): built the real
+  100-entry eval holdout (40 rhino / 30 facelift / 30 eyelid, with
+  ground-truth "after" references), then 134 real rhinoplasty training
+  triples with **per-pair instructions written by Qwen3.5-9B** looking at
+  each before/after (all 134 passed the sanitizer; holdout stems excluded
+  from training — no leakage). Rank-32 LoRA training on those pairs launched
+  at 512 px (HDA photos are small; median ~350×509), 30 epochs with the
+  canary eval every 3. Remaining: facelift + eyelid LoRAs (same command,
+  different `--procedure`), per-subject identity LoRA, and scaling synthetic
+  curation if HDA volume proves insufficient.
 
 ---
 
@@ -351,6 +383,14 @@ inference code.
   of the hackathon stack, training methodology, AMD-specific bits, and the
   retrospective in §8 (data quality, model capacity, time management). Worth
   re-reading before resuming.
+- **HDA Facial Plastic Surgery Database** — real before/after pairs used for
+  the eval holdout and procedure-LoRA training. Research use only, no
+  commercial use or redistribution; the imagery must never be committed to
+  this repo (gitignored), and LoRA weights trained on it stay private. All
+  reported results must cite: C. Rathgeb, D. Dogan, F. Stockhardt,
+  M. De Marsico, C. Busch, "Plastic Surgery: An Obstacle for Deep Face
+  Recognition?", 15th IEEE CVPR Workshop on Biometrics (CVPRW),
+  pp. 3510–3517, 2020.
 - Devpost: <https://devpost.com/software/aura-shaping-the-future-you>
 - Knight Hacks VIII: <https://knighthacksviii.devpost.com/>
 - DreamOmni2 paper: <https://arxiv.org/html/2510.06679v1> (now superseded for

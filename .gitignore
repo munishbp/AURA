@@ -1,2 +1,6 @@
 /node_modules
 ./.idea
+
+# HDA Facial Plastic Surgery Database — research-only license (Rathgeb et al.,
+# CVPRW 2020). NEVER commit the imagery, in any form, anywhere in this repo.
+HDA Facial Plastic Surgery Database*/

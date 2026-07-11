@@ -15,7 +15,13 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 from pathlib import Path
+
+# The demo co-locates the editor (~19 GB) + expander (~7 GB) on the GPU; the
+# metric models (and onnxruntime's greedy CUDA arena) must stay on CPU or
+# scoring OOMs generation. Must be set before aura_ml.eval.metrics loads.
+os.environ.setdefault("AURA_METRICS_DEVICE", "cpu")
 
 import gradio as gr
 from PIL import Image

@@ -105,7 +105,7 @@ curl -s localhost:8000/v1/jobs/$JOB/image -o preview.png
 
 ```bash
 # Build a holdout. With the HDA database on disk:
-uv run python scripts/build_eval_holdout.py --seed 0
+uv run python scripts/build_eval_holdout.py --hda "<path to HDA root>" --seed 0
 # Without it (synthetic faces, validates the pipeline only):
 uv run python scripts/fetch_test_faces.py --n 16 --out data/raw/faces
 uv run python scripts/build_eval_holdout.py --faces-dir data/raw/faces --out eval_holdout
@@ -148,6 +148,26 @@ uv run python -m aura_ml.training.train --config configs/train_qwen_toy.yaml
 The toy task ("add glasses") is deliberately high-divergence: if the training
 loop is broken in the copy-the-input way, it fails loudly on the first eval.
 
+For **real procedure pairs** from the HDA Facial Plastic Surgery Database:
+
+```bash
+# 1. Real eval holdout first (its stems are excluded from training — no leakage):
+uv run python scripts/build_eval_holdout.py --hda "<HDA root>" --seed 0
+# 2. Training triples; --vlm-instructions makes Qwen3.5-9B caption each
+#    before/after pair into a per-pair edit instruction:
+uv run python scripts/build_hda_pairs.py --hda "<HDA root>" --procedure rhinoplasty --vlm-instructions
+# 3. Train:
+uv run python -m aura_ml.training.train --config configs/train_qwen_rhino.yaml
+```
+
+**HDA license**: research use only, no commercial use or redistribution (that
+includes the images in this repo AND arguably LoRA weights trained on them —
+keep both private). Any reported results must cite:
+
+> C. Rathgeb, D. Dogan, F. Stockhardt, M. De Marsico, C. Busch,
+> "Plastic Surgery: An Obstacle for Deep Face Recognition?",
+> 15th IEEE Computer Society Workshop on Biometrics (CVPRW), pp. 3510-3517, 2020.
+
 ## Layout
 
 ```
@@ -155,11 +175,14 @@ ml/
 ├── app/demo.py                    Gradio UI
 ├── configs/train_qwen_*.yaml      per-procedure training configs
 ├── data/instructions/*.txt        instruction variants for synthetic pairing
-├── scripts/                       env check, model download, holdout build, smoke test
+├── scripts/                       env check, model download, holdout build,
+│                                  smoke test, toy-task E2E, face fetch/filter
 └── src/aura_ml/
-    ├── inference/qwen_edit.py     Qwen-Image-Edit-2511 wrapper (NF4, LoRA mgmt)
+    ├── inference/qwen_edit.py     Qwen-Image-Edit-2511 wrapper (selective NF4,
+    │                              Lightning recipe, LoRA mgmt + sidecar assert)
     ├── inference/pipeline.py      expander → editor → LoRA composition
     ├── prompt_expander/qwen35.py  Qwen3.5-9B expander + sanitizer + fallback
+    ├── server/                    FastAPI REST API (jobs, metrics, /docs)
     ├── training/train.py          QLoRA flow-matching trainer w/ canary quarantine
     ├── data/                      pair dataset, validator, synthetic pair curation
     └── eval/                      metrics + HTML grid + canary flagger

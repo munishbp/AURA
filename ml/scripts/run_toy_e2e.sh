@@ -28,7 +28,7 @@ uv run python -m aura_ml.data.synthetic_pairs \
     /tmp/toy_faces_subset data/pairs/toy_glasses \
     --procedure toy_glasses \
     --instructions data/instructions/toy_glasses.txt \
-    --samples-per-source 1 --num-steps 30 --seed 0
+    --samples-per-source 1 --num-steps 8 --seed 0
 
 echo "=== 2/3 validate dataset (structure + static-pair canary) ==="
 uv run python -m aura_ml.data.pair_loader data/pairs/toy_glasses --check-edit-magnitude

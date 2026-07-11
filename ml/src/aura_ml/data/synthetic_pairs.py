@@ -164,6 +164,12 @@ def curate_synthetic_dataset(
     """Walk source_dir, generate candidates, filter, write to output_dir
     in the SCHEMA.md layout. Returns a report dict.
 
+    Two phases so the editor and the VLM critic never share the GPU
+    (peak VRAM = max of the two, not the sum — a 32 GB card can't hold
+    both plus generation activations):
+      A) generate all candidates with the editor + numeric metric filter,
+      B) unload the editor, load the critic, judge the survivors.
+
     Keeps at most ONE candidate per source image (the highest critic score
     among survivors) so a single easy source can't dominate the dataset.
     """
@@ -179,13 +185,13 @@ def curate_synthetic_dataset(
         raise FileNotFoundError(f"no images in {src}")
 
     tally = _Tally()
-    next_id = 1
 
+    # --- Phase A: generate + numeric filter (editor on GPU) ---------------
+    survivors: dict[str, list[dict[str, Any]]] = {}
     for src_idx, src_path in enumerate(sources):
         source = Image.open(src_path).convert("RGB")
         instruction = config.instructions[src_idx % len(config.instructions)]
 
-        best: dict[str, Any] | None = None
         for k in range(config.samples_per_source):
             tally.considered += 1
             seed = config.seed + src_idx * 1000 + k
@@ -209,36 +215,56 @@ def curate_synthetic_dataset(
                 tally.drop("change too large (lpips above ceiling)")
                 continue
 
-            critic = {"score": 1.0, "reason": "critic disabled"}
-            if config.use_vlm_critic and expander is not None:
-                critic = critique_pair(source, candidate, instruction, expander)
-                if critic["score"] < config.min_critic_score:
-                    tally.drop("vlm critic rejected")
-                    continue
-
-            record = {
+            survivors.setdefault(src_path.name, []).append({
+                "source": source,
                 "candidate": candidate,
+                "instruction": instruction,
                 "seed": seed,
                 "metrics": {"edit_magnitude": em, "arcface_cosine": af, "lpips": lp},
-                "critic": critic,
-            }
-            if best is None or critic["score"] > best["critic"]["score"]:
-                best = record
+            })
+        n_alive = len(survivors.get(src_path.name, []))
+        print(f"[curate] {src_path.name}: {n_alive}/{config.samples_per_source} "
+              f"candidate(s) passed the metric filter")
 
-        if best is None:
+    # --- Phase B: VLM judgment (editor off, critic on) ---------------------
+    if config.use_vlm_critic and expander is not None and survivors:
+        print("[curate] unloading editor, loading VLM critic ...")
+        edit_pipeline.unload()
+        expander.load()
+        for records in survivors.values():
+            for rec in records:
+                rec["critic"] = critique_pair(
+                    rec["source"], rec["candidate"], rec["instruction"], expander
+                )
+    else:
+        for records in survivors.values():
+            for rec in records:
+                rec["critic"] = {"score": 1.0, "reason": "critic disabled"}
+
+    # --- Write kept pairs ---------------------------------------------------
+    next_id = 1
+    for src_name, records in survivors.items():
+        passing = [r for r in records if r["critic"]["score"] >= config.min_critic_score]
+        rejected = len(records) - len(passing)
+        for _ in range(rejected):
+            tally.drop("vlm critic rejected")
+        if not passing:
             continue
+        best = max(passing, key=lambda r: r["critic"]["score"])
 
         pair_id = f"{next_id:05d}"
         next_id += 1
         tally.kept += 1
-        source.save(out / "control" / f"{pair_id}.jpg", quality=95)
+        best["source"].save(out / "control" / f"{pair_id}.jpg", quality=95)
         best["candidate"].save(out / "target" / f"{pair_id}.jpg", quality=95)
-        (out / "prompts" / f"{pair_id}.txt").write_text(instruction + "\n", encoding="utf-8")
+        (out / "prompts" / f"{pair_id}.txt").write_text(
+            best["instruction"] + "\n", encoding="utf-8"
+        )
         (out / "meta" / f"{pair_id}.json").write_text(
             json.dumps(
                 {
                     "source_type": "synthetic",
-                    "source_file": src_path.name,
+                    "source_file": src_name,
                     "procedure": config.procedure,
                     "synthetic_seed": best["seed"],
                     "metrics": {k: round(v, 4) for k, v in best["metrics"].items()},
@@ -248,7 +274,7 @@ def curate_synthetic_dataset(
             ),
             encoding="utf-8",
         )
-        print(f"[curate] kept {pair_id} <- {src_path.name} "
+        print(f"[curate] kept {pair_id} <- {src_name} "
               f"(em={best['metrics']['edit_magnitude']:.3f} "
               f"af={best['metrics']['arcface_cosine']:.3f} "
               f"critic={best['critic']['score']:.2f})")

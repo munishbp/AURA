@@ -10,12 +10,14 @@ graded on, so 2511 is the default for both inference and LoRA training
 the hackathon pre-mortem).
 
 VRAM budget on a 32 GB RTX 5090 (the target box):
-    transformer  NF4   ~11 GB      (20B MMDiT; 40 GB at bf16 — does NOT fit raw)
+    transformer  NF4   ~12 GB      (20B MMDiT; 40 GB at bf16 — does NOT fit raw;
+                                    first/last blocks + in/out proj kept bf16)
     text_encoder NF4    ~5 GB      (Qwen2.5-VL-7B)
+    Lightning LoRA      ~2 GB      (bf16, serving default)
     VAE          bf16   <1 GB
     activations         ~2-4 GB
     ------------------------------
-    ~18-20 GB, leaving room for the 4-bit Qwen3.5-9B prompt expander (~7 GB).
+    ~20-22 GB, leaving room for the 4-bit Qwen3.5-9B prompt expander (~7 GB).
 
 Usage:
     pipe = QwenImageEditPipeline()
