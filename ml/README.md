@@ -160,6 +160,17 @@ uv run python scripts/build_hda_pairs.py --hda "<HDA root>" --procedure rhinopla
 uv run python -m aura_ml.training.train --config configs/train_qwen_rhino.yaml
 ```
 
+**Canary calibration on real data** (measured on the rhinoplasty holdout):
+DINO edit magnitude between real before/after surgery pairs is median 0.131
+(p25 0.077, only 3/40 below 0.05) — so the 0.05 static floor is fair for
+real procedures, not just the toy task. During the first rhinoplasty LoRA
+run the canary tripped at epochs 9 and 12 (62% of holdout outputs below
+floor, mean 0.044-0.046): the model was drifting toward under-editing, the
+quarantine held those checkpoints back, and training recovered by epoch 15.
+Levers for run #2: drop the lowest-quartile edit-magnitude training pairs,
+and/or region-weighted loss around the procedure area (real pairs carry
+session confounds — lighting/makeup/hair — that dilute the edit signal).
+
 **HDA license**: research use only, no commercial use or redistribution (that
 includes the images in this repo AND arguably LoRA weights trained on them —
 keep both private). Any reported results must cite:

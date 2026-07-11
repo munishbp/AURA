@@ -32,6 +32,24 @@ curated synthetic pairs) — the training loop is validated on the toy task.
 
 ---
 
+## Results
+
+"shave the dorsal hump down" on a synthetic (StyleGAN) face — zero-shot
+Qwen-Image-Edit-2511 vs the same edit with our rhinoplasty LoRA composed in.
+The LoRA was trained on real before/after pairs and renders visibly cleaner
+than the quantized base while keeping the edit conservative:
+
+![input vs zero-shot vs rhinoplasty LoRA](docs/examples/rhinoplasty_comparison.jpg)
+
+The toy task that validated the training loop — an "add glasses" LoRA applied
+to a face it never saw during training (high-divergence on purpose, so
+identity collapse fails loudly on the eval canary):
+
+![toy glasses LoRA on a held-out face](docs/examples/toy_glasses_proof.jpg)
+
+All faces here are StyleGAN-synthetic; the HDA imagery used for training and
+eval is research-only and never committed.
+
 ## Background
 
 ### What Aura was
@@ -369,11 +387,20 @@ inference code.
   ground-truth "after" references), then 134 real rhinoplasty training
   triples with **per-pair instructions written by Qwen3.5-9B** looking at
   each before/after (all 134 passed the sanitizer; holdout stems excluded
-  from training — no leakage). Rank-32 LoRA training on those pairs launched
-  at 512 px (HDA photos are small; median ~350×509), 30 epochs with the
-  canary eval every 3. Remaining: facelift + eyelid LoRAs (same command,
-  different `--procedure`), per-subject identity LoRA, and scaling synthetic
-  curation if HDA volume proves insufficient.
+  from training — no leakage).
+
+  *First real rhinoplasty LoRA* (rank 32, 512 px, 30 epochs on the 134
+  pairs): the run hugged the under-editing boundary the whole way — the
+  canary tripped at epochs 9, 12 and 21 (62% of holdout outputs under the
+  0.05 floor) and those checkpoints were auto-quarantined; late in the run
+  it settled at 25–38% static with ArcFace ~0.79. Best checkpoint (epoch 15)
+  makes visibly real but conservative nose edits on holdout faces and
+  renders noticeably cleaner than zero-shot. Calibration on the holdout
+  itself says the floor is fair: real before→after surgery pairs measure
+  median 0.131 edit magnitude, only 3/40 below 0.05. Run #2 levers: drop
+  the lowest-edit-magnitude training quartile, region-weighted loss around
+  the nose. Remaining: facelift + eyelid LoRAs (same command, different
+  `--procedure`), per-subject identity LoRA.
 
 ---
 
